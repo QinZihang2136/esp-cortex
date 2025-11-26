@@ -1,0 +1,20 @@
+# 1. 编译生成的垃圾文件 (必须忽略)
+build/
+.pio/
+__pycache__/
+
+# 2. 临时配置文件
+sdkconfig.old
+sdkconfig.ci
+
+# 3. IDE 配置 (保留 settings.json 以统一代码风格，忽略其他个人配置)
+.vscode/*
+!.vscode/settings.json
+!.vscode/c_cpp_properties.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+
+# 4. 系统文件
+.DS_Store
+Thumbs.db
