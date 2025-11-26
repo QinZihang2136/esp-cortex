@@ -59,3 +59,25 @@ EspCortex/
 │   │   └── sensor/         # 传感器采集任务 (Task Sensor)
 │   └── main.cpp            # 系统入口与任务启动
 └── sdkconfig               # ESP-IDF 项目配置 (Flash=16MB)
+```
+##  编译与烧录 (Build & Flash)
+### 本项目基于 ESP-IDF v5.x 开发。
+1. 环境准备: 确保已安装 ESP-IDF 插件及工具链。
+2. 配置项目:
+
+```text
+idf.py menuconfig
+# 确保 Flash Size 设置为 16MB
+# 确保 FreeRTOS Tick Rate 设置为 1000Hz
+```
+
+3. 编译
+```text
+idf.py build
+```
+
+## 开发日志 (Changelog)
+
+- Initial Commit: 完成基础架构搭建 (DataBus + Task Sensor)。
+- Driver Update: 集成 ICM-42688-P 驱动，支持 SPI 硬件中断读取 (200Hz)。
+- Driver Update: 集成 QMC5883L 和 ICP-20100 驱动，实现 I2C 分频读取策略。
