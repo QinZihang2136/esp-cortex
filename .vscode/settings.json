@@ -13,7 +13,6 @@
         "IDF_TARGET": "esp32s3"
     },
     "idf.flashType": "UART",
-
     // ============================================================
     // 2. IntelliSense & Clangd 设置 (保持你原有的不变)
     // ============================================================
@@ -24,7 +23,6 @@
         "--query-driver=/home/qinzihang/.espressif/tools/xtensa-esp-elf/esp-13.2.0_20230928/xtensa-esp-elf/bin/xtensa-esp-elf-gcc",
         "--compile-commands-dir=${workspaceFolder}/build"
     ],
-
     // ============================================================
     // 3. ROS 设置 & 文件关联 (保持你原有的不变)
     // ============================================================
@@ -36,16 +34,14 @@
         "string_view": "cpp",
         "span": "cpp"
     },
-
     // ============================================================
     // 4. 【新增】编辑器基础格式化设置
     //    这里强制规定：4个空格缩进，保存时自动格式化
     // ============================================================
-    "editor.formatOnSave": true,        // 写完代码按 Ctrl+S 自动变整齐
-    "editor.tabSize": 4,                // 一个 Tab = 4 空格
-    "editor.insertSpaces": true,        // 按 Tab 键插入空格
-    "editor.detectIndentation": false,  // 禁止 VSCode 自作聪明乱改缩进
-
+    "editor.formatOnSave": true, // 写完代码按 Ctrl+S 自动变整齐
+    "editor.tabSize": 4, // 一个 Tab = 4 空格
+    "editor.insertSpaces": true, // 按 Tab 键插入空格
+    "editor.detectIndentation": false, // 禁止 VSCode 自作聪明乱改缩进
     // ============================================================
     // 5. 【关键】强制指定 C/C++ 使用微软格式化器 (vcFormat)
     //    这样就可以避开 Clangd 的格式化，使用下面的 JSON 配置
@@ -57,23 +53,17 @@
         "editor.defaultFormatter": "ms-vscode.cpptools"
     },
     "C_Cpp.formatting": "vcFormat", // 指定引擎为 Visual Studio 风格
-
     // ============================================================
     // 6. 【新增】具体的代码风格定义 (Allman 风格：大括号换行)
     // ============================================================
-    
     // 函数的大括号换行: void func() \n {
     "C_Cpp.vcFormat.newLine.beforeOpenBrace.function": "newLine",
-    
     // if/for/while 的大括号换行
     "C_Cpp.vcFormat.newLine.beforeOpenBrace.block": "newLine",
-    
     // class/struct 的大括号换行
     "C_Cpp.vcFormat.newLine.beforeOpenBrace.type": "newLine",
-    
     // switch case 里的内容缩进
     "C_Cpp.vcFormat.indent.caseLabels": true,
-    
     // 指针 * 号靠左: int* p
     "C_Cpp.vcFormat.space.pointerReferenceAlignment": "left"
 }

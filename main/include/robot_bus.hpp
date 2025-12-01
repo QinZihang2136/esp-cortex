@@ -14,6 +14,7 @@ public:
     Topic<ImuData> imu;            // IMU 数据的白板
     Topic<AttitudeData> attitude;  // 姿态数据的白板
     Topic<MagData> mag;
+    Topic<BaroData> baro;
 
     // ================= 定义所有的信箱 =================
     CommandQueue<MotionCommand> motion_cmd;  // 运动指令的信箱
