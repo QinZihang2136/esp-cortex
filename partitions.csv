@@ -1,0 +1,14 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     ,        0x4000,
+otadata,  data, ota,     ,        0x2000,
+phy_init, data, phy,     ,        0x1000,
+# -------------------------------------------------
+# 核心应用区 (Factory App)
+# 之前是 2M，现在给它 8M！足够你写巨型 C++ 代码
+factory,  app,  factory, ,        8M,
+# -------------------------------------------------
+# 网页存储区 (SPIFFS/LittleFS)
+# 之前是 1M，现在给它 4M！可以放高清图片、更多 JS 库
+storage,  data, spiffs,  ,        4M,
+# -------------------------------------------------
+# 剩下的空间 (~3MB) 留空，或者以后做核心转储(Coredump)
