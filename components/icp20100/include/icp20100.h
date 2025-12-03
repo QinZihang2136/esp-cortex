@@ -9,7 +9,7 @@ public:
      * @param bus I2CBus 指针
      * @param addr 设备地址 (默认 0x63) [cite: 3565]
      */
-    ICP20100(I2CBus* bus, uint8_t addr = 0x64);
+    ICP20100(I2CBus* bus, uint8_t addr = 0x63);
 
     /**
      * @brief 初始化
