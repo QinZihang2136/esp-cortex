@@ -1,7 +1,7 @@
 // ================= 配置区 =================
 // 【重要】true = 电脑模拟模式; false = 真实连接模式
-const IS_SIMULATION = true;
-const ESP_IP = "192.168.4.1"; // 真实机器人的IP
+const IS_SIMULATION = false;
+const ESP_IP = window.location.host; // 真实机器人的IP
 
 // ================= 全局变量定义 =================
 let ws = null;

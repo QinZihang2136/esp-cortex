@@ -12,7 +12,7 @@
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
-
+#include <cstdio> // for snprintf
 static const char* TAG = "PARAM";
 static const char* NVS_NS = "robot_param"; // NVS 命名空间，相当于文件夹名
 
@@ -384,4 +384,113 @@ void ParamRegistry::remove_unused()
     }
 
     xSemaphoreGive(_mutex);
+}
+
+// =================================================================================
+//                          JSON 序列化与通用更新
+// =================================================================================
+
+std::string ParamRegistry::dump_to_json_string()
+{
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+
+    // 预估一个大小，避免频繁 realloc (假设平均每个参数 60 字节)
+    std::string json;
+    json.reserve(512 + _params.size() * 60);
+
+    // 头部
+    json += "{\"type\":\"param_list\",\"payload\":[";
+
+    char buffer[128];
+    for (size_t i = 0; i < _params.size(); i++)
+    {
+        const auto& node = _params[i];
+
+        // 获取当前值
+        float val_f = 0.0f;
+        int type_code = 0; // 0=INT, 1=FLOAT (对应 app.js 里的定义)
+
+        if (node.type == ParamType::FLOAT)
+        {
+            val_f = *(float*)node.ptr;
+            type_code = 1;
+        }
+        else
+        {
+            val_f = (float)(*(int32_t*)node.ptr); // 转成 float 方便统一传输
+            type_code = 0;
+        }
+
+        // 格式化单个对象: {"name":"xxx", "type":1, "val":1.23}
+        // %.3f 保留3位小数，对于整数它会显示 x.000，app.js 会处理
+        int len = snprintf(buffer, sizeof(buffer),
+            "{\"name\":\"%s\",\"type\":%d,\"val\":%.4f}",
+            node.name, type_code, val_f);
+
+        json.append(buffer, len);
+
+        // 如果不是最后一个，加逗号
+        if (i < _params.size() - 1)
+        {
+            json += ",";
+        }
+    }
+
+    // 尾部
+    json += "]}";
+
+    xSemaphoreGive(_mutex);
+    return json;
+}
+
+bool ParamRegistry::set_param_by_key(const char* key, float val)
+{
+    // 复用 set_float 和 set_int32 的逻辑，但这里不仅是查找，还要根据类型分发
+    // 为了避免死锁，我们这里重新上锁，并直接操作内存/NVS，或者调用 specific set 函数
+    // 最简单的方法是调用现有的 set_float/set_int32，但它们会再次上锁。
+    // *最佳实践*：直接在这里复用逻辑。
+
+    xSemaphoreTake(_mutex, portMAX_DELAY);
+
+    ParamNode* node = find_node_unsafe(key);
+    if (!node)
+    {
+        ESP_LOGE(TAG, "Update failed: Key '%s' not found", key);
+        xSemaphoreGive(_mutex);
+        return false;
+    }
+
+    esp_err_t err = ESP_FAIL;
+    nvs_handle_t handle;
+
+    // 打开 NVS
+    if (nvs_open(NVS_NS, NVS_READWRITE, &handle) != ESP_OK)
+    {
+        xSemaphoreGive(_mutex);
+        return false;
+    }
+
+    if (node->type == ParamType::FLOAT)
+    {
+        // 更新 RAM
+        *(float*)node->ptr = val;
+        // 更新 NVS
+        err = nvs_set_blob(handle, key, &val, sizeof(float));
+        ESP_LOGI(TAG, "Web Update Float: %s -> %.3f", key, val);
+    }
+    else if (node->type == ParamType::INT32)
+    {
+        int32_t i_val = (int32_t)val; // 强转回整数
+        // 更新 RAM
+        *(int32_t*)node->ptr = i_val;
+        // 更新 NVS
+        err = nvs_set_i32(handle, key, i_val);
+        ESP_LOGI(TAG, "Web Update Int:   %s -> %ld", key, (long)i_val);
+    }
+
+    if (err == ESP_OK) nvs_commit(handle);
+    nvs_close(handle);
+
+    xSemaphoreGive(_mutex);
+    return (err == ESP_OK);
 }

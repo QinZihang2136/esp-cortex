@@ -8,7 +8,26 @@
 #include "wifi_manager.hpp"     // [新增] WiFi 管理组件
 #include "spiffs_manager.hpp"   // [新增] SPIFFS 文件系统组件
 
+// [新增] 引入 WebServer 头文件
+#include "web_server.hpp"
+
+// [新增] 引入遥测任务 (如果你之前做过阶段三，记得加上这个，没做过也没关系)
+// #include "task_telemetry.h" 
+
 static const char* TAG = "MAIN";
+
+// =============================================================
+// [测试用] 定义全局参数变量
+// 这些变量的值会被参数系统管理：
+// 1. 系统启动时，尝试从 Flash 读取旧值覆盖这里。
+// 2. 网页修改时，这里的值会立即更新。
+// =============================================================
+static float  pid_pitch_p = 1.50f;
+static float  pid_pitch_i = 0.05f;
+static float  pid_pitch_d = 0.80f;
+static float  mag_declination = 4.5f; // 磁偏角
+static int32_t sys_log_level = 3;     // 日志等级 (Int 测试)
+static int32_t motor_direction = 1;   // 电机转向 (Int 测试)
 
 extern "C" void app_main(void)
 {
@@ -19,8 +38,6 @@ extern "C" void app_main(void)
     // =============================================================
 
     // [NVS Flash] 初始化
-    // 注意：WiFi 驱动和 ParamRegistry 都依赖 NVS，必须最先初始化
-    // 这里处理了 NVS 分区空间不足或版本不匹配的情况 (自动擦除重置)
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
@@ -30,7 +47,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     // [文件系统] 挂载 SPIFFS
-    // 负责挂载 'storage' 分区，以便后续读取 index.html 等网页文件
+    // 必须在 WebServer 启动前完成，因为 WebServer 需要读取里面的网页文件
     SpiffsManager::instance().init();
 
     // =============================================================
@@ -38,12 +55,35 @@ extern "C" void app_main(void)
     // =============================================================
 
     // [参数系统] 初始化参数注册表
-    // 确保后续模块 (如 SensorTask) 启动时能读取到 NVS 中的配置
     ParamRegistry::instance().init();
 
+    // -------------------------------------------------------------
+    // [新增] 注册测试参数 (在这里把变量交给 Registry 接管)
+    // -------------------------------------------------------------
+    auto& params = ParamRegistry::instance();
+
+    // 注册浮点数 (Float)
+    params.register_float("PID_PITCH_P", &pid_pitch_p, 1.50f);
+    params.register_float("PID_PITCH_I", &pid_pitch_i, 0.05f);
+    params.register_float("PID_PITCH_D", &pid_pitch_d, 0.80f);
+    params.register_float("MAG_DECLIN", &mag_declination, 4.5f);
+
+    // 注册整数 (Int32)
+    params.register_int32("SYS_LOG_LEVEL", &sys_log_level, 3);
+    params.register_int32("MOTOR_DIR", &motor_direction, 1);
+
+    ESP_LOGI(TAG, "Test Params Registered. P:%.2f I:%.2f D:%.2f", pid_pitch_p, pid_pitch_i, pid_pitch_d);
+    // -------------------------------------------------------------
+
     // [网络服务] 启动 WiFi 管理器
-    // 逻辑：优先连接 "R&Q" (01200204)，连接失败则自动开启热点 "EspCortex"
+    // 必须在 WebServer 启动前完成，因为 WebServer 依赖网络栈
     WifiManager::instance().init();
+
+    // =============================================================
+    // [新增] 启动 Web 服务器 (包含 mDNS)
+    // =============================================================
+    // 启动后，你可以在浏览器访问 http://espcortex.local 或 http://<IP地址>
+    WebServer::instance().init();
 
     // [数据总线] 初始化 Topic 和 Queue
     RobotBus::instance().init();
@@ -53,27 +93,27 @@ extern "C" void app_main(void)
     // =============================================================
 
     // [传感器任务]
-    // 注意：传感器相关的参数 (如 MAG_OFFSET) 应在 start_sensor_task 内部进行注册
     start_sensor_task();
+
+    // [遥测任务] 如果你已经完成了 task_telemetry 代码，请取消下面注释
+    // start_telemetry_task();
 
     // =============================================================
     // 3. 系统体检 (可选)
     // =============================================================
 
-    // 打印当前系统中存在于 Flash 但未被代码使用的参数 (僵尸参数)
-    // 帮助开发者发现废弃的配置
     ParamRegistry::instance().print_unused();
-
-    // [新增] 打印文件系统使用情况 (方便检查网页文件是否烧录进去)
     SpiffsManager::instance().print_usage();
 
     ESP_LOGI(TAG, "All Systems Go. Main task entering idle loop.");
 
-    // 主任务进入空闲循环，仅做心跳保活
+    // 主任务进入空闲循环
     while (1)
     {
         vTaskDelay(pdMS_TO_TICKS(10000));
-        // 这里后续可以加一些系统级的监控，比如内存剩余量监控
         ESP_LOGI(TAG, "System Heartbeat: Free Heap %lu bytes", (unsigned long)esp_get_free_heap_size());
+
+        // [调试] 你可以在这里打印一下参数，看看网页修改后这里变没变
+        // ESP_LOGI(TAG, "Current P: %.2f", pid_pitch_p);
     }
 }

@@ -5,7 +5,7 @@
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h" // 引入信号量/互斥锁
-
+#include <string>       // <--- 【必须添加这一行】
 /**
  * @brief 支持的参数类型
  */
@@ -100,6 +100,23 @@ public:
     void remove_unused();
     void debug_dump_nvs();
 
+    // ================== 序列化与反序列化接口 ==================
+
+/**
+ * @brief 生成所有参数的 JSON 字符串
+ * 格式: {"type":"param_list", "payload": [{"name":"PID_P", "type":1, "val":0.5}, ...]}
+ * @return std::string 包含完整的 JSON 数据
+ */
+    std::string dump_to_json_string();
+
+    /**
+     * @brief 通用参数更新接口
+     * @param key 参数名
+     * @param val 新数值 (统一由 float 传入，内部自动判断类型并强转)
+     * @return true 更新成功, false 找不到参数
+     */
+    bool set_param_by_key(const char* key, float val);
+
 private:
     ParamRegistry() = default; // 私有构造
 
@@ -114,4 +131,6 @@ private:
 
     // NVS 配置
     const size_t PARAM_WARN_THRESHOLD = 200;
+
+
 };

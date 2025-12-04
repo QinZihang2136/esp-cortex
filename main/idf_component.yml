@@ -1,0 +1,3 @@
+dependencies:
+  # 指定我们需要官方的 mdns 组件
+  espressif/mdns: "^1.2"
