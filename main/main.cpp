@@ -7,7 +7,7 @@
 #include "param_registry.hpp"
 #include "wifi_manager.hpp"     // [新增] WiFi 管理组件
 #include "spiffs_manager.hpp"   // [新增] SPIFFS 文件系统组件
-
+#include "task_telemetry.h"
 // [新增] 引入 WebServer 头文件
 #include "web_server.hpp"
 
@@ -96,7 +96,7 @@ extern "C" void app_main(void)
     start_sensor_task();
 
     // [遥测任务] 如果你已经完成了 task_telemetry 代码，请取消下面注释
-    // start_telemetry_task();
+    start_telemetry_task();
 
     // =============================================================
     // 3. 系统体检 (可选)

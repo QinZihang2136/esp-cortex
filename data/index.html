@@ -6,10 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EspCortex 控制台</title>
 
+    <!-- 引入外部库 (Bootstrap, FontAwesome, Chart.js, Three.js, Plotly) -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- [关键] 引入 OrbitControls 用于鼠标拖拽 3D 模型 -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
@@ -17,6 +20,7 @@
 <body>
 
     <div class="d-flex" id="wrapper">
+        <!-- 侧边栏 -->
         <div class="bg-dark text-white" id="sidebar-wrapper">
             <div class="sidebar-heading text-center py-4 primary-text fs-4 fw-bold text-uppercase border-bottom">
                 <i class="fas fa-robot me-2"></i>EspCortex
@@ -41,6 +45,7 @@
             </div>
         </div>
 
+        <!-- 页面内容 -->
         <div id="page-content-wrapper">
             <nav class="navbar navbar-expand-lg navbar-light bg-light py-4 px-4 border-bottom">
                 <div class="d-flex align-items-center">
@@ -56,18 +61,34 @@
 
             <div class="container-fluid px-4 mt-4">
 
+                <!-- 1. 仪表盘视图 -->
                 <div id="view-dashboard" class="view-section">
+                    <!-- 顶部状态卡片 -->
                     <div class="row g-3 mb-4">
+                        <!-- 系统状态卡片 -->
                         <div class="col-md-3">
                             <div
                                 class="p-3 bg-white shadow-sm d-flex justify-content-between align-items-center rounded">
                                 <div>
-                                    <p class="mb-0 text-muted">电池电压</p>
-                                    <h3 class="fs-2 mb-0" id="val-bat">0.0 V</h3>
+                                    <p class="mb-1 text-muted fw-bold">系统状态 (System)</p>
+                                    <div class="mb-1">
+                                        <i class="fas fa-battery-half text-success me-1"></i>
+                                        <span id="val-bat" class="fw-bold">0.0 V</span>
+                                    </div>
+                                    <div class="mb-1">
+                                        <i class="fas fa-memory text-primary me-1"></i>
+                                        Heap: <span id="val-heap">0.0</span> KB
+                                    </div>
+                                    <div class="small text-muted">
+                                        <i class="fas fa-clock me-1"></i>
+                                        <span id="val-uptime">00:00:00</span>
+                                    </div>
                                 </div>
-                                <i class="fas fa-battery-half fs-1 text-success"></i>
+                                <i class="fas fa-microchip fs-1 text-secondary opacity-25"></i>
                             </div>
                         </div>
+
+                        <!-- 姿态角卡片 -->
                         <div class="col-md-3">
                             <div
                                 class="p-3 bg-white shadow-sm d-flex justify-content-between align-items-center rounded">
@@ -100,6 +121,7 @@
                         </div>
                     </div>
 
+                    <!-- 视图切换按钮 -->
                     <div class="d-flex justify-content-center mb-3">
                         <div class="btn-group" role="group">
                             <input type="radio" class="btn-check" name="dashView" id="btn-check-chart"
@@ -114,12 +136,15 @@
                         </div>
                     </div>
 
+                    <!-- 动态内容区域 -->
                     <div class="row">
                         <div class="col-12">
+                            <!-- Chart.js 容器 -->
                             <div id="dash-content-chart" class="bg-white p-4 rounded shadow-sm" style="height: 500px;">
                                 <canvas id="mainChart"></canvas>
                             </div>
 
+                            <!-- Three.js 容器 -->
                             <div id="dash-content-3d" class="bg-white p-0 rounded shadow-sm overflow-hidden"
                                 style="height: 500px; display: none; position: relative;">
                                 <div id="three-container" style="width: 100%; height: 100%;"></div>
@@ -132,6 +157,7 @@
                     </div>
                 </div>
 
+                <!-- 2. 参数管理视图 -->
                 <div id="view-tuning" class="view-section" style="display: none;">
                     <div class="bg-white p-4 rounded shadow-sm">
                         <div class="d-flex justify-content-between mb-3 align-items-center">
@@ -167,6 +193,7 @@
                     </div>
                 </div>
 
+                <!-- 3. 传感器标定视图 -->
                 <div id="view-calibration" class="view-section" style="display: none;">
                     <h3>传感器标定</h3>
                     <div class="bg-white p-4 rounded shadow-sm">
@@ -177,37 +204,100 @@
                                     onclick="switchCalibTab('imu')">加速度计 (IMU)</button></li>
                         </ul>
 
+                        <!-- 磁力计校准 Tab -->
                         <div id="tab-content-mag" class="calib-content">
-                            <div class="alert alert-info border-info"><i
-                                    class="fas fa-info-circle me-2"></i>请手持机器人，在空中画“8”字。</div>
-                            <div class="row">
+                            <div class="row mb-3">
                                 <div class="col-md-8">
-                                    <div id="mag-plot" class="border rounded" style="height:400px;"></div>
+                                    <div class="alert alert-primary d-flex align-items-center" role="alert">
+                                        <i class="fas fa-magic fs-4 me-3"></i>
+                                        <div>
+                                            <strong>智能校准向导</strong><br>
+                                            <span id="mag-status-text">请点击“开始采集”，并全方位旋转机器人...</span>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div class="col-md-4">
-                                    <div class="d-grid gap-2">
-                                        <button class="btn btn-outline-primary py-3" onclick="startMagCapture()"><i
-                                                class="fas fa-play me-2"></i>开始采集</button>
-                                        <button class="btn btn-outline-success py-3"><i
-                                                class="fas fa-calculator me-2"></i>计算参数</button>
-                                        <button class="btn btn-danger py-3"><i class="fas fa-save me-2"></i>保存</button>
+                                    <div class="card bg-light">
+                                        <div class="card-body py-2 text-center">
+                                            <small class="text-muted">采集进度 (Coverage)</small>
+                                            <div class="progress mt-1" style="height: 10px;">
+                                                <div id="mag-progress-bar" class="progress-bar bg-success"
+                                                    role="progressbar" style="width: 0%"></div>
+                                            </div>
+                                            <div class="fw-bold mt-1"><span id="mag-points-count">0</span> Points</div>
+                                        </div>
                                     </div>
-                                    <div class="mt-3 p-3 bg-light rounded font-monospace small">Points: <span
-                                            id="mag-points-count" class="fw-bold text-primary">0</span></div>
+                                </div>
+                            </div>
+
+                            <div class="row">
+                                <div class="col-md-8">
+                                    <div id="mag-plot" class="border rounded bg-white shadow-sm" style="height:450px;">
+                                    </div>
+                                </div>
+
+                                <div class="col-md-4">
+                                    <div class="mb-4">
+                                        <label class="form-label text-muted small fw-bold">空间覆盖情况 (Octants)</label>
+                                        <div class="d-flex flex-wrap justify-content-between p-2 bg-white rounded border"
+                                            id="octant-container">
+                                            <div id="oct-0" class="octant-box" title="+X +Y +Z">1</div>
+                                            <div id="oct-1" class="octant-box" title="+X +Y -Z">2</div>
+                                            <div id="oct-2" class="octant-box" title="+X -Y +Z">3</div>
+                                            <div id="oct-3" class="octant-box" title="+X -Y -Z">4</div>
+                                            <div id="oct-4" class="octant-box" title="-X +Y +Z">5</div>
+                                            <div id="oct-5" class="octant-box" title="-X +Y -Z">6</div>
+                                            <div id="oct-6" class="octant-box" title="-X -Y +Z">7</div>
+                                            <div id="oct-7" class="octant-box" title="-X -Y -Z">8</div>
+                                        </div>
+                                        <div class="form-text small mt-1"><i class="fas fa-info-circle"></i> 请点亮所有 8
+                                            个方块以解锁计算。</div>
+                                    </div>
+
+                                    <div class="d-grid gap-3">
+                                        <button id="btn-mag-start" class="btn btn-outline-primary btn-lg py-3"
+                                            onclick="toggleMagCapture()">
+                                            <i class="fas fa-play me-2"></i>开始采集
+                                        </button>
+
+                                        <button id="btn-mag-calc" class="btn btn-secondary btn-lg py-3" disabled
+                                            onclick="calcMagCalibration()">
+                                            <i class="fas fa-calculator me-2"></i>计算并写入
+                                        </button>
+                                    </div>
+
+                                    <div id="mag-result-box"
+                                        class="mt-3 p-3 bg-light rounded border font-monospace small"
+                                        style="display:none;">
+                                        <strong>Result:</strong><br>
+                                        Offset: <span id="res-offset" class="text-primary">-</span><br>
+                                        Scale: <span id="res-scale" class="text-success">-</span><br>
+                                        Error: <span id="res-err" class="text-danger">-</span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
 
+                        <!-- IMU (Accel/Gyro) 校准 Tab -->
                         <div id="tab-content-imu" class="calib-content" style="display:none;">
+                            <!-- 陀螺仪静止校准 (Gyro) -->
                             <div class="card mb-4 border-warning">
-                                <div class="card-header bg-warning text-dark">快速校准</div>
+                                <div class="card-header bg-warning text-dark">陀螺仪校准 (Gyroscope)</div>
                                 <div class="card-body">
-                                    <p class="card-text">仅校准水平面。</p>
-                                    <button class="btn btn-warning" onclick="sendJson({cmd: 'calib_imu_level'})"><i
-                                            class="fas fa-level-down-alt me-2"></i>水平校准</button>
+                                    <p class="card-text">请将设备放置在稳固的桌面上，保持<strong>绝对静止</strong> 3秒钟。</p>
+                                    <!-- [修复点] 这里增加了 id 和 onclick 绑定新的 startGyroCalibration 函数 -->
+                                    <button id="btn-gyro-start" class="btn btn-warning w-100"
+                                        onclick="startGyroCalibration()">
+                                        <i class="fas fa-level-down-alt me-2"></i>开始静止校准
+                                    </button>
                                 </div>
                             </div>
-                            <h4 class="mb-3">6面校准向导</h4>
+
+                            <!-- 加速度计 6面校准 (Accel) -->
+                            <h4 class="mb-3">加速度计 6面校准 (Accelerometer)</h4>
+                            <div class="alert alert-info small py-2"><i class="fas fa-info-circle me-1"></i>
+                                请像掷骰子一样，分别将6个面朝下放置并点击对应按钮。</div>
+
                             <div class="row g-3 text-center mb-4">
                                 <div class="col-md-4"><button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
                                         id="btn-side-z-up" onclick="captureImuSide('z_up')"><i
@@ -234,6 +324,7 @@
                     </div>
                 </div>
 
+                <!-- 4. 终端日志视图 -->
                 <div id="view-terminal" class="view-section" style="display: none;">
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <h3>系统日志</h3>
@@ -249,6 +340,7 @@
         </div>
     </div>
 
+    <!-- 脚本引用 (顺序不可变) -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="app.js"></script>
 </body>

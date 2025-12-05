@@ -11,10 +11,11 @@
  * 你给我什么类型，我就变成存放什么类型的白板。
  */
 template<typename T>
-class Topic {
+class Topic
+{
 private:
     T _data{};                      // 真正存放数据的地方 (白板的板面)
-    std::atomic<uint32_t> _gen{0};  // 版本号 (每写一次就+1)
+    std::atomic<uint32_t> _gen{ 0 };  // 版本号 (每写一次就+1)
     mutable std::mutex _mutex;      // 互斥锁 (写数据时的“请勿打扰”牌子)
     TaskHandle_t _notify_task = nullptr; // 需要被叫醒的任务 (控制员的工号)
 
@@ -26,7 +27,8 @@ public:
      * @param msg 要写入的数据
      * 注意：不能在中断(ISR)里调用这个函数，因为用了锁！
      */
-    void publish(const T& msg) {
+    void publish(const T& msg)
+    {
         {
             // 1. 上锁 (Lock)
             // std::lock_guard 是一个保镖。
@@ -34,17 +36,18 @@ public:
             // 当它消失时(大括号结束)，自动解锁。
             // 这样防止你忘记解锁导致死机。
             std::lock_guard<std::mutex> lock(_mutex);
-            
+
             // 2. 写入数据
             _data = msg;
-            
+
             // 3. 版本号 +1
             // 告诉大家：我有新数据啦！
-            _gen++; 
+            _gen++;
         } // <--- 在这里，保镖消失，锁自动解开
 
         // 4. 如果有人注册了“叫醒服务”，就去叫醒他
-        if (_notify_task != nullptr) {
+        if (_notify_task != nullptr)
+        {
             // FreeRTOS 的函数：发送一个信号给指定任务
             xTaskNotifyGive(_notify_task);
         }
@@ -56,10 +59,12 @@ public:
      * @param last_gen 我上次看到的版本号
      * @return true(有新数据), false(没更新)
      */
-    bool copy_if_updated(T& out, uint32_t& last_gen) {
+    bool copy_if_updated(T& out, uint32_t& last_gen)
+    {
         // 1. 快速检查：现在的版本号 等不等于 我上次记的版本号？
         uint32_t current_gen = _gen.load();
-        if (current_gen == last_gen) {
+        if (current_gen == last_gen)
+        {
             return false; // 没变化，直接走人，不浪费时间上锁
         }
 
@@ -78,8 +83,17 @@ public:
      * @brief 注册“叫醒服务”
      * 谁调用这个函数，以后白板更新时就叫醒谁。
      */
-    void register_notifier() {
+    void register_notifier()
+    {
         // 获取当前正在运行的任务句柄(ID)，存下来
         _notify_task = xTaskGetCurrentTaskHandle();
+    }
+
+    T get()
+    {
+        // 1. 上锁，防止读取到写了一半的数据
+        std::lock_guard<std::mutex> lock(_mutex);
+        // 2. 返回数据的副本
+        return _data;
     }
 };

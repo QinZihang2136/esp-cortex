@@ -3,7 +3,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_timer.h"
-
+#include "param_registry.hpp" // [必须] 引入参数系统
 // 引入所有硬件驱动
 #include "board_config.h"
 #include "robot_bus.hpp"
@@ -26,6 +26,31 @@ static ICP20100 baro(&i2c_bus); // 新增
 
 static SemaphoreHandle_t sem_imu_drdy = NULL;
 
+// ==========================================
+// [新增] 定义校准参数变量 (放在全局或静态区)
+// ==========================================
+// 默认 Offset = 0 (不偏移)
+static float mag_offset_x = 0.0f;
+static float mag_offset_y = 0.0f;
+static float mag_offset_z = 0.0f;
+// 默认 Scale = 1.0 (不缩放)
+static float mag_scale_x = 1.0f;
+static float mag_scale_y = 1.0f;
+static float mag_scale_z = 1.0f;
+
+// 2. 陀螺仪 (Gyro) - 只有零偏
+static float gyro_offset_x = 0.0f;
+static float gyro_offset_y = 0.0f;
+static float gyro_offset_z = 0.0f;
+
+// 3. 加速度计 (Accel) - 零偏 + 缩放
+static float accel_offset_x = 0.0f;
+static float accel_offset_y = 0.0f;
+static float accel_offset_z = 0.0f;
+static float accel_scale_x = 1.0f;
+static float accel_scale_y = 1.0f;
+static float accel_scale_z = 1.0f;
+
 // --- ISR ---
 static void IRAM_ATTR imu_isr_handler(void* arg)
 {
@@ -38,6 +63,7 @@ static void IRAM_ATTR imu_isr_handler(void* arg)
 static void task_sensor_entry(void* arg)
 {
     auto& bus = RobotBus::instance();
+    auto& params = ParamRegistry::instance(); // 获取参数单例
     ImuData imu_data = {};
     MagData mag_data = {};
     BaroData baro_data = {};
@@ -53,6 +79,35 @@ static void task_sensor_entry(void* arg)
     // 初始化 I2C, 频率 400kHz
     i2c_bus.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
     vTaskDelay(pdMS_TO_TICKS(50));
+
+    // ==========================================
+    // [新增] 注册磁力计参数
+    // ==========================================
+    // 这样网页就可以通过 set_param 修改它们，且开机自动读取 NVS
+    params.register_float("MAG_OFFSET_X", &mag_offset_x, 0.0f);
+    params.register_float("MAG_OFFSET_Y", &mag_offset_y, 0.0f);
+    params.register_float("MAG_OFFSET_Z", &mag_offset_z, 0.0f);
+
+    params.register_float("MAG_SCALE_X", &mag_scale_x, 1.0f);
+    params.register_float("MAG_SCALE_Y", &mag_scale_y, 1.0f);
+    params.register_float("MAG_SCALE_Z", &mag_scale_z, 1.0f);
+
+    // Gyro
+    params.register_float("GYRO_OFFSET_X", &gyro_offset_x, 0.0f);
+    params.register_float("GYRO_OFFSET_Y", &gyro_offset_y, 0.0f);
+    params.register_float("GYRO_OFFSET_Z", &gyro_offset_z, 0.0f);
+
+    // Accel
+    params.register_float("ACCEL_OFFSET_X", &accel_offset_x, 0.0f);
+    params.register_float("ACCEL_OFFSET_Y", &accel_offset_y, 0.0f);
+    params.register_float("ACCEL_OFFSET_Z", &accel_offset_z, 0.0f);
+    params.register_float("ACCEL_SCALE_X", &accel_scale_x, 1.0f);
+    params.register_float("ACCEL_SCALE_Y", &accel_scale_y, 1.0f);
+    params.register_float("ACCEL_SCALE_Z", &accel_scale_z, 1.0f);
+
+    ESP_LOGI(TAG, "Mag Params Loaded. Off: (%.1f, %.1f, %.1f), Scale: (%.2f, %.2f, %.2f)",
+        mag_offset_x, mag_offset_y, mag_offset_z,
+        mag_scale_x, mag_scale_y, mag_scale_z);
 
     // ================== I2C 扫描器开始 ==================
     ESP_LOGW(TAG, ">>> 开始 I2C 总线扫描 <<<");
@@ -103,18 +158,40 @@ static void task_sensor_entry(void* arg)
         if (xSemaphoreTake(sem_imu_drdy, pdMS_TO_TICKS(20)) == pdTRUE)
         {
 
-            // --- A. 读取 IMU (每次都读) ---
-            imu.getAccel(&imu_data.ax, &imu_data.ay, &imu_data.az);
-            imu.getGyro(&imu_data.gx, &imu_data.gy, &imu_data.gz);
+            // --- A. 读取 IMU ---
+            // 1. 读取原始数据 (Raw)
+            float ax, ay, az, gx, gy, gz;
+            imu.getAccel(&ax, &ay, &az);
+            imu.getGyro(&gx, &gy, &gz);
+
+            // 2. [关键] 应用 Accel 校准: (Raw - Offset) * Scale
+            imu_data.ax = (ax - accel_offset_x) * accel_scale_x;
+            imu_data.ay = (ay - accel_offset_y) * accel_scale_y;
+            imu_data.az = (az - accel_offset_z) * accel_scale_z;
+
+            // 3. [关键] 应用 Gyro 校准: Raw - Offset
+            imu_data.gx = gx - gyro_offset_x;
+            imu_data.gy = gy - gyro_offset_y;
+            imu_data.gz = gz - gyro_offset_z;
+
             imu_data.timestamp_us = esp_timer_get_time();
             bus.imu.publish(imu_data);
-
             // --- B. 分频读取磁力计 (100Hz -> 2分频) ---
             if (tick_counter % 2 == 0)
             {
                 if (mag.isDataReady())
                 {
-                    mag.readData(&mag_data.x, &mag_data.y, &mag_data.z);
+                    // 1. 先读到临时变量里 (Raw Data)
+                    float raw_x, raw_y, raw_z;
+                    mag.readData(&raw_x, &raw_y, &raw_z);
+
+                    // 2. [关键修复] 应用校准参数！
+                    // 公式: (原始值 - 零偏) * 缩放系数
+                    mag_data.x = (raw_x - mag_offset_x) * mag_scale_x;
+                    mag_data.y = (raw_y - mag_offset_y) * mag_scale_y;
+                    mag_data.z = (raw_z - mag_offset_z) * mag_scale_z;
+
+                    // 3. 发布校准后的数据
                     bus.mag.publish(mag_data);
                 }
             }
