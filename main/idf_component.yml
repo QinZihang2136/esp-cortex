@@ -1,3 +1,5 @@
 dependencies:
   # 指定我们需要官方的 mdns 组件
   espressif/mdns: "^1.2"
+  # [新增] 引入 Eigen 数学库，用于 EKF 矩阵运算
+  espressif/eigen: "^3.4.0"

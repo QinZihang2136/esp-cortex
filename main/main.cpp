@@ -10,7 +10,7 @@
 #include "task_telemetry.h"
 // [新增] 引入 WebServer 头文件
 #include "web_server.hpp"
-
+#include "task_estimator.hpp" // <--- 引入头文件
 // [新增] 引入遥测任务 (如果你之前做过阶段三，记得加上这个，没做过也没关系)
 // #include "task_telemetry.h" 
 
@@ -94,6 +94,9 @@ extern "C" void app_main(void)
 
     // [传感器任务]
     start_sensor_task();
+
+    //启动 Estimator (它负责消费数据算姿态)
+    start_estimator_task();
 
     // [遥测任务] 如果你已经完成了 task_telemetry 代码，请取消下面注释
     start_telemetry_task();

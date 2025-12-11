@@ -31,14 +31,22 @@ void task_telemetry_entry(void* arg)
         vTaskDelay(pdMS_TO_TICKS(50));
 
         // 2. 从总线获取最新数据 (线程安全)
+        // [说明] 依然获取原始 IMU/Mag 数据，用于发送给前端进行波形显示和校准
         ImuData imu = bus.imu.get();
         MagData mag = bus.mag.get();
 
+        // [新增] 获取 EKF 发布的姿态数据 (已在 Estimator 任务中解算好)
+        AttitudeData att = bus.attitude.get();
+
         // 3. 姿态解算 (Attitude Estimation)
+        // [修改] 现在直接使用 EKF 的结果，不再手动计算
+        float roll = att.roll;
+        float pitch = att.pitch;
+        float yaw = att.yaw;
+
+        /* [旧逻辑保留] 原始的手动解算代码已注释，改用上面的 EKF 数据
+           保留此处作为参考或对比
         // 目前仅使用加速度计 (Accelerometer Only) 计算 Roll/Pitch
-        float roll = 0.0f;
-        float pitch = 0.0f;
-        float yaw = 0.0f;
 
         // 防止除以0
         if (imu.az != 0)
@@ -59,6 +67,7 @@ void task_telemetry_entry(void* arg)
             // atan2(y, x) 返回的是弧度，转成角度
             yaw = to_deg(atan2(mag.y, mag.x));
         }
+        */
 
         // 4. 获取系统信息
         // 剩余内存 (KB)
