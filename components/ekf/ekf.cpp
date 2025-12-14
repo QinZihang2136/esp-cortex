@@ -36,6 +36,8 @@ void EspEKF::init()
     // 复位状态
     x.setZero();
     P.setIdentity();
+    P = P * 0.1f; // 初始不确定性不用太大
+    R_accel *= 0.1f;
     is_initialized = true;
 }
 
@@ -79,10 +81,76 @@ void EspEKF::predict(const Vector3f& gyro, float dt)
 
     // --- 4. 更新协方差矩阵 P = F*P*F' + Q ---
     P = F * P * F.transpose() + Q;
+    P = 0.5f * (P + P.transpose());
 }
 
 // 后面这两个函数先留空，或者保持原样
-void EspEKF::fuse_accel(const Vector3f& accel) {}
+void EspEKF::fuse_accel(const Vector3f& accel)
+{
+    if (!is_initialized) return;
+
+    // 这里是融合加速度计的代码
+    // 计算观测值和预测值的残差
+    // 然后计算卡尔曼增益 K
+    // 最后更新状态 x 和协方差 P
+    if (accel.norm() < 0.1)
+    {
+        // 避免除以零
+        return;
+    }
+    Vector3f z = accel.normalized(); // 实际观测值 (Measurement)
+
+    // --- 2. 计算预期观测值 h(x) ---
+    // 根据当前预测的姿态，算一下“理论上”加速度计应该读到多少
+    float phi = x(0);
+    float theta = x(1);
+    float sp = sin(phi);   float cp = cos(phi);
+    float st = sin(theta); float ct = cos(theta);
+
+    Vector3f h_x;
+    h_x(0) = -st;
+    h_x(1) = sp * ct;
+    h_x(2) = cp * ct;
+
+    Vector3f y = z - h_x; // 残差 (Innovation)
+
+    // --- 4. 计算雅可比矩阵 H ---
+    // H 描述了状态(角度)微小变化如何影响观测(加速度)
+    // 维度: 3(观测) x 4(状态)
+    Matrix<float, 3, X_DIM> H;
+    H.setZero(); // 先清零，因为后两列(Bias)对加速度没影响，保持为0即可
+
+    // 第一行: d(acc_x) / d(phi, theta)
+    H(0, 1) = -ct;
+
+    // 第二行: d(acc_y) / d(phi, theta)
+    H(1, 0) = cp * ct;
+    H(1, 1) = -sp * st;
+
+    // 第三行: d(acc_z) / d(phi, theta)
+    H(2, 0) = -sp * ct;
+    H(2, 1) = -cp * st;
+
+    // --- 5. 标准 EKF 更新步骤 (The Magic) ---
+
+    // S = H * P * Ht + R
+    // S 是残差的协方差，代表“这次观测和预测之间的差异，有多大程度是不可信的噪声”
+    Matrix<float, 3, 3> S = H * P * H.transpose() + R_accel;
+
+    // K = P * Ht * S^-1
+    // K 是卡尔曼增益，代表“我应该多大程度上相信这次残差”
+    Matrix<float, X_DIM, 3> K = P * H.transpose() * S.inverse();
+
+    // 更新状态向量: x = x + K * y
+    x = x + K * y;
+
+    // 更新协方差矩阵: P = (I - K * H) * P
+    Matrix<float, X_DIM, X_DIM> I;
+    I.setIdentity();
+    P = (I - K * H) * P;
+
+    // 由于篇幅限制，这里不展开具体实现
+}
 
 Vector3f EspEKF::get_euler_angles()
 {

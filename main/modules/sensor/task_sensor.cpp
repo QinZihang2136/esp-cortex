@@ -11,8 +11,9 @@
 #include "i2c_bus.h"
 #include "icm42688.h"
 #include "qmc5883l.h"
-#include "icp20100.h" // 新增
-
+#include "icp20100.h" 
+#include "lps22hh.h" // [新增] 引入 LPS22HH 驱动头文件
+#include <math.h> // [必须] 引入 math.h 用于 pow() 函数
 static const char* TAG = "TASK_SENSOR";
 
 // --- 静态硬件对象 ---
@@ -22,7 +23,14 @@ static ICM42688 imu(&spi_bus, PIN_SPI_CS_IMU);
 // 假设 SCL=11, SDA=10 (请核对 board_config.h)
 static I2CBus i2c_bus(I2C_NUM_0);
 static QMC5883L mag(&i2c_bus);
-static ICP20100 baro(&i2c_bus); // 新增
+
+// [修改] 定义气压计对象和状态管理
+static ICP20100 baro_icp(&i2c_bus); // 原有的 ICP20100 对象
+static LPS22HH* baro_lps = nullptr; // [新增] LPS22HH 指针 (动态指向 5C 或 5D 实例)
+
+// [新增] 活跃气压计类型标记
+enum BaroType { BARO_NONE, BARO_ICP20100, BARO_LPS22HH };
+static BaroType active_baro = BARO_NONE;
 
 static SemaphoreHandle_t sem_imu_drdy = NULL;
 
@@ -50,6 +58,18 @@ static float accel_offset_z = 0.0f;
 static float accel_scale_x = 1.0f;
 static float accel_scale_y = 1.0f;
 static float accel_scale_z = 1.0f;
+
+static float calculate_altitude(float pressure_kpa)
+{
+    // 标准海平面气压 101.325 kPa
+    const float P0 = 101.325f;
+    if (pressure_kpa <= 0.0f) return 0.0f;
+
+    // 公式: h = 44330 * (1 - (P / P0)^(1/5.255))
+    // 注意：这里计算的是"气压高度"，即假设当前处于标准大气压环境下的相对高度。
+    // 实际绝对海拔受天气系统（高压/低压）影响，但短时间内的相对变化（如上楼）是非常准的。
+    return 44330.0f * (1.0f - powf(pressure_kpa / P0, 0.1903f));
+}
 
 // --- ISR ---
 static void IRAM_ATTR imu_isr_handler(void* arg)
@@ -135,6 +155,8 @@ static void task_sensor_entry(void* arg)
             if (addr == 0x0D) ESP_LOGI(TAG, "  -> 可能是 QMC5883L");
             if (addr == 0x63) ESP_LOGI(TAG, "  -> 可能是 ICP-20100 (ADO=GND)");
             if (addr == 0x64) ESP_LOGI(TAG, "  -> 可能是 ICP-20100 (ADO=High)");
+            if (addr == 0x5C) ESP_LOGI(TAG, "  -> 可能是 LPS22HH (SA0=GND)"); // [新增]
+            if (addr == 0x5D) ESP_LOGI(TAG, "  -> 可能是 LPS22HH (SA0=VCC)"); // [新增]
         }
     }
     if (devices_found == 0)
@@ -143,8 +165,47 @@ static void task_sensor_entry(void* arg)
     }
     ESP_LOGW(TAG, ">>> 扫描结束，共发现 %d 个设备 <<<", devices_found);
 
+    // 初始化磁力计
     if (mag.begin() != ESP_OK) ESP_LOGE(TAG, "Mag Init Failed");
-    if (baro.begin() != ESP_OK) ESP_LOGE(TAG, "Baro Init Failed");
+
+    // =======================================================
+    // [修改] 气压计自动探测逻辑
+    // 优先级：LPS22HH (0x5C) > LPS22HH (0x5D) > ICP20100
+    // =======================================================
+
+    // 1. 尝试 LPS22HH 地址 0x5C (SA0 接地)
+    static LPS22HH lps_5c(&i2c_bus, 0x5C);
+    if (lps_5c.begin() == ESP_OK)
+    {
+        baro_lps = &lps_5c;
+        active_baro = BARO_LPS22HH;
+        ESP_LOGI(TAG, "Using Barometer: LPS22HH (Addr: 0x5C)");
+    }
+    else
+    {
+        // 2. 尝试 LPS22HH 地址 0x5D (SA0 接 VCC)
+        static LPS22HH lps_5d(&i2c_bus, 0x5D);
+        if (lps_5d.begin() == ESP_OK)
+        {
+            baro_lps = &lps_5d;
+            active_baro = BARO_LPS22HH;
+            ESP_LOGI(TAG, "Using Barometer: LPS22HH (Addr: 0x5D)");
+        }
+        else
+        {
+            // 3. 尝试 ICP20100 (回退兼容旧硬件)
+            if (baro_icp.begin() == ESP_OK)
+            {
+                active_baro = BARO_ICP20100;
+                ESP_LOGI(TAG, "Using Barometer: ICP-20100");
+            }
+            else
+            {
+                active_baro = BARO_NONE;
+                ESP_LOGE(TAG, "NO VALID BAROMETER FOUND!");
+            }
+        }
+    }
 
     // 3. 开启 IMU 中断
     sem_imu_drdy = xSemaphoreCreateBinary();
@@ -196,19 +257,36 @@ static void task_sensor_entry(void* arg)
                 }
             }
 
-            // --- C. 分频读取气压计 (25Hz -> 8分频) ---
-            if (tick_counter % 8 == 0)
+            // --- C. 分频读取气压计 (50Hz -> 4分频) ---
+            if (tick_counter % 4 == 0)
             {
-                // ICP20100 没有 DataReady 引脚，直接读
-                baro.readData(&baro_data.pressure, &baro_data.temperature);
-                bus.baro.publish(baro_data);
+                esp_err_t ret = ESP_FAIL;
+
+                // [修改] 根据活跃的气压计类型读取数据
+                if (active_baro == BARO_LPS22HH && baro_lps != nullptr)
+                {
+                    ret = baro_lps->readData(&baro_data.pressure, &baro_data.temperature);
+                }
+                else if (active_baro == BARO_ICP20100)
+                {
+                    ret = baro_icp.readData(&baro_data.pressure, &baro_data.temperature);
+                }
+
+                // 如果读取成功，发布数据
+                if (ret == ESP_OK)
+                {
+                    bus.baro.publish(baro_data);
+                }
             }
 
             // 调试打印 (1秒一次)
             if (tick_counter % 200 == 0)
             {
-                ESP_LOGI(TAG, "IMU: %.2f | Mag: %.2f | Press: %.2f kPa",
-                    imu_data.az, mag_data.z, baro_data.pressure);
+                // 实时计算海拔
+                float alt = calculate_altitude(baro_data.pressure);
+
+                ESP_LOGI(TAG, "IMU: %.2f | Mag: %.2f | Press: %.3f kPa | Alt: %.2f m",
+                    imu_data.az, mag_data.z, baro_data.pressure, alt);
             }
 
             tick_counter++;

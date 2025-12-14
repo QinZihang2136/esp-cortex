@@ -54,7 +54,21 @@ void task_estimator_entry(void* arg)
             // --- A. 核心预测步骤 ---
             Vector3f gyro(imu_data.gx, imu_data.gy, imu_data.gz);
             ekf.predict(gyro, dt);
+            // ==========================================
+            // [新增] --- B. 观测修正步骤 ---
+            // ==========================================
+            Vector3f accel(imu_data.ax, imu_data.ay, imu_data.az);
 
+            // 只有当合力接近 1g (9.8 m/s^2) 时才进行修正
+            // 如果飞机在剧烈机动（比如大过载转弯），加速度计测的不仅仅是重力，
+            // 这时候强制修正会让姿态算错。
+            float acc_norm = accel.norm();
+            // 假设 imu_data.ax 单位是 m/s^2，那么 1g ≈ 9.8
+            // 我们可以放宽一点范围，比如 0.5g ~ 1.5g 之间
+            if (acc_norm > 5.0f && acc_norm < 15.0f)
+            {
+                ekf.fuse_accel(accel);
+            }
             // --- B. 发布姿态 ---
             Vector3f euler = ekf.get_euler_angles();
 
