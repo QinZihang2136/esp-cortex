@@ -20,6 +20,7 @@
 - **交互式 Web 控制台 (Web Dashboard)**
   - **零依赖**：基于 HTML5 / Bootstrap / Three.js，前端资源直接存储在片上 Flash（SPIFFS）中。
   - **WebSocket 通信**：毫秒级低延迟数据传输，支持实时波形显示与 3D 姿态同步。
+  - **实时海拔监测**：基于气压数据的实时相对高度计算与显示。[NEW]
   - **mDNS 支持**：支持通过 `http://espcortex.local` 域名直接访问，无需手动查询 IP。
 
 - **智能参数系统 (ParamRegistry)**
@@ -31,18 +32,18 @@
 - **强大的传感器驱动**
   - **IMU**：支持 **ICM-42688-P**（SPI，200 Hz），采用 GPIO 中断驱动，实现极低延迟读取。
   - **磁力计**：支持 **QMC5883L**（I2C），采用主从分频读取策略。
-  - **气压计**：支持 **ICP-20100**（I2C），采用主从分频读取策略。
+  - **气压计**：支持 **ICP-20100** 与 **LPS22HH**（I2C），系统启动时**自动识别**传感器型号并加载对应驱动。
 
 ---
 
 ## 🛠️ 硬件规格 (Hardware Specifications)
 
-| 组件              | 型号              | 接口          | 频率 (ODR)  | 备注                               |
-| :---------------- | :---------------- | :------------ | :---------- | :--------------------------------- |
-| **MCU** | ESP32-S3-WROOM-1  | -             | 240 MHz     | Flash: 16 MB, PSRAM: 8 MB          |
-| **IMU** | ICM-42688-P       | SPI2 (FSPI)   | 200 Hz      | 主时钟源，触发中断                 |
-| **Magnetometer** | QMC5883L          | I2C           | 50 / 100 Hz | 配合 IMU 分频读取                  |
-| **Barometer** | ICP-20100         | I2C           | 25 / 40 Hz  | 配合 IMU 分频读取                  |
+| 组件 | 型号 | 接口 | 频率 (ODR) | 备注 |
+| :-- | :-- | :-- | :-- | :-- |
+| **MCU** | ESP32-S3-WROOM-1 | - | 240 MHz | Flash: 16 MB, PSRAM: 8 MB |
+| **IMU** | ICM-42688-P | SPI2 (FSPI) | 200 Hz | 主时钟源，触发中断 |
+| **Magnetometer** | QMC5883L | I2C | 50 / 100 Hz | 配合 IMU 分频读取 |
+| **Barometer** | **LPS22HH** / ICP-20100 | I2C | 75 Hz / 25 Hz | **LPS22HH (推荐)**: 75Hz 低噪声模式 |
 
 ### 🔌 引脚定义 (Pin Map)
 
@@ -78,32 +79,35 @@ EspCortex/
 │   ├── i2c_bus/            # 通用 I2C 总线封装 (C++)
 │   ├── icm42688/           # ICM-42688-P 驱动
 │   ├── qmc5883l/           # QMC5883L 驱动
-│   └── icp20100/           # ICP-20100 驱动
+│   ├── icp20100/           # ICP-20100 驱动 (旧版硬件)
+│   └── lps22hh/            # [NEW] LPS22HH 驱动 (新版硬件)
 ├── main/
 │   ├── include/
 │   │   ├── board_config.h  # 全局引脚定义
 │   │   └── robot_bus.hpp   # DataBus 总线定义
 │   ├── modules/
-│   │   ├── sensor/         # 传感器采集任务 (Task Sensor)
+│   │   ├── sensor/         # 传感器采集任务 (含自动硬件检测)
 │   │   └── estimator/      # [NEW] 姿态估算任务 (Task Estimator)
 │   └── main.cpp            # 系统入口与任务启动
 └── sdkconfig               # ESP-IDF 项目配置 (Flash = 16 MB)
 ```
 
+---
+
 ## 🌐 网络与使用 (Connectivity)
 
 设备启动后会自动尝试连接预设的 Wi-Fi。
 
-- **STA 模式（默认）**：尝试连接已配置的路由器。  
-- **AP 模式（后备）**：如果连接失败，自动开启热点：  
-  - SSID: `EspCortex`  
-  - Password: `12345678`  
+- **STA 模式（默认）**：尝试连接已配置的路由器。
+- **AP 模式（后备）**：如果连接失败，自动开启热点：
+  - **SSID**: `EspCortex`
+  - **Password**: `12345678`
 
 访问控制台：
 
-1. 电脑 / 手机连接到同一网络（或直接连到 AP 热点）。  
-2. 打开浏览器，访问：  
-   - `http://espcortex.local`（推荐，依赖 mDNS）；或  
+1. 电脑 / 手机连接到同一网络（或直接连到 AP 热点）。
+2. 打开浏览器，访问：
+   - `http://espcortex.local`（推荐，依赖 mDNS）；或
    - 通过串口日志查看设备 IP 地址，直接访问 `http://<device-ip>`。
 
 ---
@@ -120,7 +124,7 @@ idf.py menuconfig
 
 确保：
 
-- 已开启 HTTP Server / WebSocket 支持；  
+- 已开启 HTTP Server / WebSocket 支持；
 - Partition Table 中为 SPIFFS / NVS 分配了足够的 storage 分区。
 
 ### 2. 编译代码
@@ -129,20 +133,21 @@ idf.py menuconfig
 idf.py build
 ```
 
-> 注意：初次编译时，构建系统会自动下载 Eigen 等托管组件，需保持网络连接。
+注意：初次编译时，构建系统会自动下载 Eigen 等托管组件，需保持网络连接。
 
 ### 3. 烧录固件与网页
 
-> ⚠️ 注意：初次使用，或每次修改 `data/` 目录下的网页文件后，均需要重新烧录 SPIFFS 分区。
+⚠️ 注意：初次使用，或每次修改 `data/` 目录下的网页文件后，均需要重新烧录 SPIFFS 分区。
 
 ```bash
 # 烧录固件
 idf.py flash
-
-# 烧录网页资源
-# 方法 A (推荐): 使用 VS Code 插件的 "ESP-IDF: Flash SPIFFS Partition"
-# 方法 B: 使用分区工具生成 bin 并烧录
 ```
+
+烧录网页资源：
+
+- 方法 A（推荐）：使用 VS Code 插件的 **"ESP-IDF: Flash SPIFFS Partition"**
+- 方法 B：使用分区工具生成 bin 并烧录
 
 ### 4. 串口监控
 
@@ -156,27 +161,24 @@ idf.py monitor
 
 ## 📅 开发日志 (Changelog)
 
-### EKF & Eigen Integration (Current)
+### EKF & Driver Integration (Current)
 
-- 架构重构：抽离 `common` 组件，优化头文件依赖关系。  
-- 核心升级：引入 Eigen 数学库，实现 `EspEKF` 类基础框架（预测步）。  
-- 任务调度：新增 `task_estimator`，实现 IMU 数据驱动的零延迟姿态解算。  
+- **Driver Update**: 新增 LPS22HH 气压计支持，实现 75Hz 低噪声模式采集；新增 I2C 设备自动扫描与识别功能（支持 0x5C/0x5D 地址及 ICP-20100 回退兼容）。
+- **Feature Add**: 新增基于气压数据的实时海拔计算（Altitude Calculation）。
+- **Core Update**: 引入 Eigen 数学库，实现 EspEKF 类基础框架（预测步）。
+- **Task Update**: 新增 `task_estimator`，实现 IMU 数据驱动的零延迟姿态解算。
 
 ### Initial Commit
 
-- 完成基础架构搭建（DataBus + 传感器任务框架）。  
-
-### Driver Update
-
-- 集成 ICM-42688-P（SPI IRQ）、QMC5883L、ICP-20100 驱动。  
+- 完成基础架构搭建（DataBus + 传感器任务框架）。
 
 ### System Update (ParamRegistry)
 
-- 实现基于 NVS 的参数持久化存储。  
-- 支持参数的动态注册与僵尸参数清理。  
+- 实现基于 NVS 的参数持久化存储。
+- 支持参数的动态注册与僵尸参数清理。
 
 ### Feature Add (Web Control)
 
-- 集成 `esp_http_server` 与 `mdns` 组件。  
-- 实现 WebSocket 双向通信。  
-- 完成 Web 端参数列表的拉取与在线修改功能（基于 JSON 协议）。  
+- 集成 `esp_http_server` 与 `mdns` 组件。
+- 实现 WebSocket 双向通信。
+- 完成 Web 端参数列表的拉取与在线修改功能（基于 JSON 协议）。
