@@ -25,6 +25,9 @@ void task_estimator_entry(void* arg)
     uint32_t last_imu_gen = 0;
     uint64_t last_time_us = esp_timer_get_time();
 
+    MagData mag_data_snapshot;
+    uint32_t last_mag_gen = 0;
+
     ESP_LOGI(TAG, "Estimator Task Started.");
 
     while (1)
@@ -69,13 +72,26 @@ void task_estimator_entry(void* arg)
             {
                 ekf.fuse_accel(accel);
             }
+
+            if (RobotBus::instance().mag.copy_if_updated(mag_data_snapshot, last_mag_gen))
+            {
+                // 只有当磁力计数据有效（不是全0）时才融合
+                if (mag_data_snapshot.x != 0.0f || mag_data_snapshot.y != 0.0f)
+                {
+                    Vector3f mag_vec(mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z);
+                    ekf.fuse_mag(mag_vec);
+                }
+            }
             // --- B. 发布姿态 ---
             Vector3f euler = ekf.get_euler_angles();
 
             AttitudeData att;
             att.roll = euler.x() * 57.29578f;  // 弧度转角度 (rad -> deg)
             att.pitch = euler.y() * 57.29578f; // 弧度转角度
-            att.yaw = 0.0f; // 暂时没有
+            att.yaw = euler.z() * 57.29578f; // EKF 内部状态是 rad，转 deg
+
+            if (att.yaw < 0) att.yaw += 360.0f;
+            if (att.yaw >= 360.0f) att.yaw -= 360.0f;
 
             RobotBus::instance().attitude.publish(att);
 

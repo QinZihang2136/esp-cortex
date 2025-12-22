@@ -6,21 +6,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EspCortex 控制台</title>
 
-    <!-- 引入外部库 (Bootstrap, FontAwesome, Chart.js, Three.js, Plotly) -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <!-- [关键] 引入 OrbitControls 用于鼠标拖拽 3D 模型 -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
     <link rel="stylesheet" href="style.css">
+
+    <style>
+        .calib-icon {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            transition: transform 0.3s ease;
+            display: inline-block;
+            color: #555;
+        }
+
+        /* 选中或完成时的样式 */
+        .btn-success .calib-icon {
+            color: white;
+        }
+
+        /* 定义飞机的姿态旋转 */
+        .pose-level {
+            transform: rotate(0deg);
+        }
+
+        /* 平放 */
+        .pose-nose-up {
+            transform: rotate(0deg) scale(1.2);
+        }
+
+        /* 机头朝天 */
+        .pose-nose-dn {
+            transform: rotate(180deg);
+        }
+
+        /* 机头朝地 */
+        .pose-left {
+            transform: rotate(-90deg);
+        }
+
+        /* 左侧卧 */
+        .pose-right {
+            transform: rotate(90deg);
+        }
+
+        /* 右侧卧 */
+        .pose-invert {
+            transform: scaleY(-1);
+            opacity: 0.6;
+        }
+
+        /* 倒扣 */
+    </style>
 </head>
 
 <body>
 
     <div class="d-flex" id="wrapper">
-        <!-- 侧边栏 -->
         <div class="bg-dark text-white" id="sidebar-wrapper">
             <div class="sidebar-heading text-center py-4 primary-text fs-4 fw-bold text-uppercase border-bottom">
                 <i class="fas fa-robot me-2"></i>EspCortex
@@ -45,7 +90,6 @@
             </div>
         </div>
 
-        <!-- 页面内容 -->
         <div id="page-content-wrapper">
             <nav class="navbar navbar-expand-lg navbar-light bg-light py-4 px-4 border-bottom">
                 <div class="d-flex align-items-center">
@@ -61,11 +105,8 @@
 
             <div class="container-fluid px-4 mt-4">
 
-                <!-- 1. 仪表盘视图 -->
                 <div id="view-dashboard" class="view-section">
-                    <!-- 顶部状态卡片 -->
                     <div class="row g-3 mb-4">
-                        <!-- 系统状态卡片 -->
                         <div class="col-md-3">
                             <div
                                 class="p-3 bg-white shadow-sm d-flex justify-content-between align-items-center rounded">
@@ -88,7 +129,6 @@
                             </div>
                         </div>
 
-                        <!-- 姿态角卡片 -->
                         <div class="col-md-3">
                             <div
                                 class="p-3 bg-white shadow-sm d-flex justify-content-between align-items-center rounded">
@@ -121,7 +161,6 @@
                         </div>
                     </div>
 
-                    <!-- 视图切换按钮 -->
                     <div class="d-flex justify-content-center mb-3">
                         <div class="btn-group" role="group">
                             <input type="radio" class="btn-check" name="dashView" id="btn-check-chart"
@@ -136,15 +175,12 @@
                         </div>
                     </div>
 
-                    <!-- 动态内容区域 -->
                     <div class="row">
                         <div class="col-12">
-                            <!-- Chart.js 容器 -->
                             <div id="dash-content-chart" class="bg-white p-4 rounded shadow-sm" style="height: 500px;">
                                 <canvas id="mainChart"></canvas>
                             </div>
 
-                            <!-- Three.js 容器 -->
                             <div id="dash-content-3d" class="bg-white p-0 rounded shadow-sm overflow-hidden"
                                 style="height: 500px; display: none; position: relative;">
                                 <div id="three-container" style="width: 100%; height: 100%;"></div>
@@ -157,7 +193,6 @@
                     </div>
                 </div>
 
-                <!-- 2. 参数管理视图 -->
                 <div id="view-tuning" class="view-section" style="display: none;">
                     <div class="bg-white p-4 rounded shadow-sm">
                         <div class="d-flex justify-content-between mb-3 align-items-center">
@@ -193,7 +228,6 @@
                     </div>
                 </div>
 
-                <!-- 3. 传感器标定视图 -->
                 <div id="view-calibration" class="view-section" style="display: none;">
                     <h3>传感器标定</h3>
                     <div class="bg-white p-4 rounded shadow-sm">
@@ -204,7 +238,6 @@
                                     onclick="switchCalibTab('imu')">加速度计 (IMU)</button></li>
                         </ul>
 
-                        <!-- 磁力计校准 Tab -->
                         <div id="tab-content-mag" class="calib-content">
                             <div class="row mb-3">
                                 <div class="col-md-8">
@@ -278,14 +311,11 @@
                             </div>
                         </div>
 
-                        <!-- IMU (Accel/Gyro) 校准 Tab -->
                         <div id="tab-content-imu" class="calib-content" style="display:none;">
-                            <!-- 陀螺仪静止校准 (Gyro) -->
                             <div class="card mb-4 border-warning">
                                 <div class="card-header bg-warning text-dark">陀螺仪校准 (Gyroscope)</div>
                                 <div class="card-body">
                                     <p class="card-text">请将设备放置在稳固的桌面上，保持<strong>绝对静止</strong> 3秒钟。</p>
-                                    <!-- [修复点] 这里增加了 id 和 onclick 绑定新的 startGyroCalibration 函数 -->
                                     <button id="btn-gyro-start" class="btn btn-warning w-100"
                                         onclick="startGyroCalibration()">
                                         <i class="fas fa-level-down-alt me-2"></i>开始静止校准
@@ -293,38 +323,80 @@
                                 </div>
                             </div>
 
-                            <!-- 加速度计 6面校准 (Accel) -->
                             <h4 class="mb-3">加速度计 6面校准 (Accelerometer)</h4>
                             <div class="alert alert-info small py-2"><i class="fas fa-info-circle me-1"></i>
-                                请像掷骰子一样，分别将6个面朝下放置并点击对应按钮。</div>
+                                请根据图标指示，将机器人摆放至对应姿态并点击按钮。</div>
 
                             <div class="row g-3 text-center mb-4">
-                                <div class="col-md-4"><button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
-                                        id="btn-side-z-up" onclick="captureImuSide('z_up')"><i
-                                            class="fas fa-arrow-up fs-4"></i><br>Top (Z+)</button></div>
-                                <div class="col-md-4"><button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
-                                        id="btn-side-z-down" onclick="captureImuSide('z_down')"><i
-                                            class="fas fa-arrow-down fs-4"></i><br>Bottom (Z-)</button></div>
-                                <div class="col-md-4"><button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
-                                        id="btn-side-x-up" onclick="captureImuSide('x_up')"><i
-                                            class="fas fa-arrow-right fs-4"></i><br>Front (X+)</button></div>
-                                <div class="col-md-4"><button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
-                                        id="btn-side-x-down" onclick="captureImuSide('x_down')"><i
-                                            class="fas fa-arrow-left fs-4"></i><br>Back (X-)</button></div>
-                                <div class="col-md-4"><button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
-                                        id="btn-side-y-up" onclick="captureImuSide('y_up')"><i
-                                            class="fas fa-redo fs-4"></i><br>Right (Y+)</button></div>
-                                <div class="col-md-4"><button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
-                                        id="btn-side-y-down" onclick="captureImuSide('y_down')"><i
-                                            class="fas fa-undo fs-4"></i><br>Left (Y-)</button></div>
+                                <div class="col-md-4">
+                                    <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
+                                        id="btn-side-z-down" onclick="captureImuSide('z_down')">
+                                        <i class="fas fa-fighter-jet calib-icon pose-level"></i><br>
+                                        <strong>Level (平放)</strong><br>
+                                        <span class="small text-muted">机腹贴地</span>
+                                    </button>
+                                </div>
+
+                                <div class="col-md-4">
+                                    <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn" id="btn-side-z-up"
+                                        onclick="captureImuSide('z_up')">
+                                        <div class="position-relative d-inline-block">
+                                            <i class="fas fa-fighter-jet calib-icon pose-level" style="opacity:0.3"></i>
+                                            <i
+                                                class="fas fa-sync position-absolute top-50 start-50 translate-middle text-dark"></i>
+                                        </div><br>
+                                        <strong>Inverted (倒扣)</strong><br>
+                                        <span class="small text-muted">机背贴地</span>
+                                    </button>
+                                </div>
+
+                                <div class="col-md-4">
+                                    <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn" id="btn-side-x-up"
+                                        onclick="captureImuSide('x_up')">
+                                        <i class="fas fa-fighter-jet calib-icon"
+                                            style="transform: rotate(-90deg);"></i><br>
+                                        <strong>Nose Up (机头朝天)</strong><br>
+                                        <span class="small text-muted">机尾贴地</span>
+                                    </button>
+                                </div>
+
+                                <div class="col-md-4">
+                                    <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
+                                        id="btn-side-x-down" onclick="captureImuSide('x_down')">
+                                        <i class="fas fa-fighter-jet calib-icon"
+                                            style="transform: rotate(90deg);"></i><br>
+                                        <strong>Nose Down (机头朝地)</strong><br>
+                                        <span class="small text-muted">机头贴地</span>
+                                    </button>
+                                </div>
+
+                                <div class="col-md-4">
+                                    <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn" id="btn-side-y-up"
+                                        onclick="captureImuSide('y_up')">
+                                        <i class="fas fa-fighter-jet calib-icon"
+                                            style="transform: rotate(-45deg);"></i><br>
+                                        <strong>Left Side (左侧卧)</strong><br>
+                                        <span class="small text-muted">左翼贴地</span>
+                                    </button>
+                                </div>
+
+                                <div class="col-md-4">
+                                    <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
+                                        id="btn-side-y-down" onclick="captureImuSide('y_down')">
+                                        <i class="fas fa-fighter-jet calib-icon"
+                                            style="transform: rotate(45deg);"></i><br>
+                                        <strong>Right Side (右侧卧)</strong><br>
+                                        <span class="small text-muted">右翼贴地</span>
+                                    </button>
+                                </div>
                             </div>
+
                             <div class="d-grid"><button id="btn-imu-calc" class="btn btn-secondary btn-lg" disabled
                                     onclick="finishImuCalibration()">计算并保存</button></div>
                         </div>
                     </div>
                 </div>
 
-                <!-- 4. 终端日志视图 -->
                 <div id="view-terminal" class="view-section" style="display: none;">
                     <div class="d-flex justify-content-between align-items-center mb-2">
                         <h3>系统日志</h3>
@@ -340,7 +412,6 @@
         </div>
     </div>
 
-    <!-- 脚本引用 (顺序不可变) -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="app.js"></script>
 </body>

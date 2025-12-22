@@ -49,7 +49,7 @@ window.onload = function () {
     if (IS_SIMULATION) {
         setConnStatus("模拟模式 (Simulation)", "bg-warning text-dark");
         document.getElementById("sim-badge").style.display = "inline-block";
-        logToTerminal("Mode: Simulation enabled.");
+        logToTerminal("Mode: Simulation enabled (FRD Frame).");
         startSimulationDataLoop();
         allParams = generateMockParams(20);
     } else {
@@ -457,11 +457,9 @@ window.calcMagCalibration = function () {
     }
 };
 
-// ================= 7. IMU 校准 (智能版：防抖 + 方向检查) =================
+// ================= 7. IMU 校准 (智能版：FRD 适配) =================
 
 // --- 7.1 陀螺仪静止校准 ---
-// 注意：如果你的 index.html 没有 id="btn-gyro-start"，你需要把之前的 "水平校准" 按钮改为调用这个函数
-// 或者将这个函数的逻辑绑定到 sendJson({cmd: 'calib_imu_level'}) 那个按钮上
 window.startGyroCalibration = function () {
     if (isCalibratingGyro) return;
 
@@ -472,7 +470,6 @@ window.startGyroCalibration = function () {
         sendJson({ cmd: "set_param", key: "GYRO_OFFSET_Z", val: 0 });
     }
 
-    // 尝试获取按钮（如果没有，就不更新UI，只执行逻辑）
     const btn = document.querySelector("button[onclick*='calib_imu_level']") || document.getElementById("btn-gyro-start");
 
     let originalHtml = "";
@@ -498,22 +495,16 @@ window.startGyroCalibration = function () {
     }, 3000);
 };
 
-// 重写 HTML 中原来的 onclick="sendJson({cmd: 'calib_imu_level'})"
-// 你可以在控制台运行这行代码，或者手动修改 index.html
-// 建议: 在 HTML 中把 onclick 改为 onclick="startGyroCalibration()"
-
 function finishGyroCalibration() {
     const data = imuCalibData.gyro;
     if (data.length < 20) { alert("采集点数不足，请重试"); return; }
 
-    // 1. 静止检测 (标准差)
     const statsX = getArrayStats(data.map(p => p.x));
     const statsY = getArrayStats(data.map(p => p.y));
     const statsZ = getArrayStats(data.map(p => p.z));
 
     const maxStd = Math.max(statsX.std, statsY.std, statsZ.std);
-    // 阈值：取决于你的陀螺仪单位。如果是 rad/s, 0.05 很大。如果是度/s, 0.05 很小。
-    // 这里假设数据比较小，给一个相对宽容的阈值 0.1
+    // 这里取 0.1 作为防抖阈值
     if (maxStd > 0.1) {
         alert(`校准失败：检测到晃动 (StdDev: ${maxStd.toFixed(3)})！\n请将设备固定在桌面上重试。`);
         return;
@@ -534,7 +525,7 @@ function finishGyroCalibration() {
     }
 }
 
-// --- 7.2 加速度计 6面校准 (带防抖与方向检查) ---
+// --- 7.2 加速度计 6面校准 (带防抖与方向检查 - FRD 适配) ---
 
 window.captureImuSide = function (sideName) {
     const btnId = `btn-side-${sideName.replace('_', '-')}`;
@@ -570,23 +561,18 @@ function finishImuSideCapture(sideName, btnElement) {
         return;
     }
 
-    // 静止检测
     const sX = getArrayStats(data.map(p => p.x));
     const sY = getArrayStats(data.map(p => p.y));
     const sZ = getArrayStats(data.map(p => p.z));
 
     const maxStd = Math.max(sX.std, sY.std, sZ.std);
-    // 加速度计单位通常是 g (1.0) 或者 m/s2 (9.8)
-    // 假设是 g, 0.05 比较合理。假设是 m/s2, 0.5 比较合理。
-    // 这里取 0.1 作为通用防抖阈值 (对于 1g 来说略宽松，对于 9.8 来说极其严格)
-    // 根据你的模拟器逻辑 (1.0g)，0.1 是合理的。
     if (maxStd > 0.1) {
         alert(`采集失败：检测到晃动！\n标准差: ${maxStd.toFixed(3)}\n请将设备放置在稳固平面上。`);
         resetSideBtn(btnElement);
         return;
     }
 
-    // 方向检测
+    // 方向检测 (核心修正逻辑)
     if (!checkOrientationValid(sideName, sX.mean, sY.mean, sZ.mean)) {
         resetSideBtn(btnElement);
         return;
@@ -610,6 +596,7 @@ function getArrayStats(arr) {
     return { mean: mean, std: Math.sqrt(variance) };
 }
 
+// [修正] 适配 FRD 坐标系的方向检查
 function checkOrientationValid(side, x, y, z) {
     const G_TARGET = 1.0;
     const TOLERANCE = 0.4;
@@ -617,25 +604,36 @@ function checkOrientationValid(side, x, y, z) {
     let valid = false;
     let errorMsg = "姿态不符";
 
+    // FRD 定义: Z轴向下为正，X轴向前为正，Y轴向右为正
+    // 加速度计测量的是比力 (Support Force)，静止时方向向上(对抗重力)
+    // 1. 平放 (Body Z Down): Support Force Up -> 指向 Body -Z -> 读数 -1g
+    // 2. 倒扣 (Body Z Up):   Support Force Up -> 指向 Body +Z -> 读数 +1g
+    // 3. 抬头 (Body X Up):   Support Force Up -> 指向 Body +X -> 读数 +1g
+    // 4. 低头 (Body X Down): Support Force Up -> 指向 Body -X -> 读数 -1g
+    // 5. 右侧下 (Body Y Down): Support Force Up -> 指向 Body -Y -> 读数 -1g
+    // 6. 左侧下 (Body Y Up):   Support Force Up -> 指向 Body +Y -> 读数 +1g
+
     switch (side) {
-        case 'z_up':
-            if (z > G_TARGET - TOLERANCE) valid = true;
-            else errorMsg = `期望 Z轴 > 0.6，实际 Z=${z.toFixed(2)}。请 Z轴朝上！`; break;
-        case 'z_down':
-            if (z < -G_TARGET + TOLERANCE) valid = true;
-            else errorMsg = `期望 Z轴 < -0.6，实际 Z=${z.toFixed(2)}。请 Z轴朝下！`; break;
-        case 'x_up':
-            if (x > G_TARGET - TOLERANCE) valid = true;
-            else errorMsg = `期望 X轴 > 0.6，实际 X=${x.toFixed(2)}。请车头朝上！`; break;
-        case 'x_down':
-            if (x < -G_TARGET + TOLERANCE) valid = true;
-            else errorMsg = `期望 X轴 < -0.6，实际 X=${x.toFixed(2)}。请车尾朝上！`; break;
-        case 'y_up':
-            if (y > G_TARGET - TOLERANCE) valid = true;
-            else errorMsg = `期望 Y轴 > 0.6，实际 Y=${y.toFixed(2)}。请右侧朝下！`; break;
-        case 'y_down':
-            if (y < -G_TARGET + TOLERANCE) valid = true;
-            else errorMsg = `期望 Y轴 < -0.6，实际 Y=${y.toFixed(2)}。请左侧朝下！`; break;
+        case 'z_down': // 平放
+            if (z < -G_TARGET + TOLERANCE) valid = true; // Expect Z ≈ -1
+            else errorMsg = `期望 Z轴 ≈ -1.0 (平放)，实际 Z=${z.toFixed(2)}。请平放设备！`; break;
+        case 'z_up':   // 倒扣
+            if (z > G_TARGET - TOLERANCE) valid = true;  // Expect Z ≈ +1
+            else errorMsg = `期望 Z轴 ≈ +1.0 (倒扣)，实际 Z=${z.toFixed(2)}。请倒扣设备！`; break;
+
+        case 'x_up':   // 机头朝上
+            if (x > G_TARGET - TOLERANCE) valid = true;  // Expect X ≈ +1
+            else errorMsg = `期望 X轴 ≈ +1.0 (机头朝上)，实际 X=${x.toFixed(2)}。请机头朝天！`; break;
+        case 'x_down': // 机头朝下
+            if (x < -G_TARGET + TOLERANCE) valid = true; // Expect X ≈ -1
+            else errorMsg = `期望 X轴 ≈ -1.0 (机头朝下)，实际 X=${x.toFixed(2)}。请机头朝地！`; break;
+
+        case 'y_up':   // 左侧朝下 (左翼触地，Y轴指向天)
+            if (y > G_TARGET - TOLERANCE) valid = true;  // Expect Y ≈ +1
+            else errorMsg = `期望 Y轴 ≈ +1.0 (左侧朝下)，实际 Y=${y.toFixed(2)}。请左侧朝下！`; break;
+        case 'y_down': // 右侧朝下 (右翼触地，Y轴指向地)
+            if (y < -G_TARGET + TOLERANCE) valid = true; // Expect Y ≈ -1
+            else errorMsg = `期望 Y轴 ≈ -1.0 (右侧朝下)，实际 Y=${y.toFixed(2)}。请右侧朝下！`; break;
     }
 
     if (!valid && !IS_SIMULATION) {
@@ -678,21 +676,32 @@ window.finishImuCalibration = function () {
         return { x: x / d.length, y: y / d.length, z: z / d.length };
     };
 
-    const z_up = getAvg('z_up'); const z_down = getAvg('z_down');
-    const x_up = getAvg('x_up'); const x_down = getAvg('x_down');
-    const y_up = getAvg('y_up'); const y_down = getAvg('y_down');
+    const z_up_inv = getAvg('z_up');     // 倒扣 (+1g)
+    const z_down_nml = getAvg('z_down'); // 平放 (-1g)
 
-    // Min-Max 算法
-    const offZ = (z_up.z + z_down.z) / 2;
-    const scaZ = 1.0 / ((z_up.z - z_down.z) / 2);
+    const x_up_nose = getAvg('x_up');    // 头上 (+1g)
+    const x_down_nose = getAvg('x_down');// 头下 (-1g)
 
-    const offX = (x_up.x + x_down.x) / 2;
-    const scaX = 1.0 / ((x_up.x - x_down.x) / 2);
+    const y_up_left = getAvg('y_up');    // 左下 (+1g)
+    const y_down_right = getAvg('y_down');// 右下 (-1g)
 
-    const offY = (y_up.y + y_down.y) / 2;
-    const scaY = 1.0 / ((y_up.y - y_down.y) / 2);
+    // Min-Max 算法修正 (FRD)
+    // Offset = (Max + Min) / 2
+    // Scale = 1.0 / ((Max - Min) / 2)
 
-    const msg = `计算结果:\n
+    // Z Axis: Max=Inv(+1), Min=Norm(-1)
+    const offZ = (z_up_inv.z + z_down_nml.z) / 2;
+    const scaZ = 1.0 / ((z_up_inv.z - z_down_nml.z) / 2);
+
+    // X Axis: Max=Up(+1), Min=Down(-1)
+    const offX = (x_up_nose.x + x_down_nose.x) / 2;
+    const scaX = 1.0 / ((x_up_nose.x - x_down_nose.x) / 2);
+
+    // Y Axis: Max=Left(+1), Min=Right(-1)
+    const offY = (y_up_left.y + y_down_right.y) / 2;
+    const scaY = 1.0 / ((y_up_left.y - y_down_right.y) / 2);
+
+    const msg = `计算结果 (FRD):\n
     Offset: (${offX.toFixed(3)}, ${offY.toFixed(3)}, ${offZ.toFixed(3)})
     Scale : (${scaX.toFixed(3)}, ${scaY.toFixed(3)}, ${scaZ.toFixed(3)})
     
@@ -835,17 +844,18 @@ function startSimulationDataLoop() {
         t += 0.05;
 
         // 模拟 IMU 数据 (默认平放)
-        let simAccel = { x: 0, y: 0, z: 1 };
+        // FRD: 平放时 Z = -1
+        let simAccel = { x: 0, y: 0, z: -1 };
 
-        // 如果正在校准某个面，生成对应面的数据
+        // 如果正在校准某个面，生成对应面的数据 (符合 FRD 规范)
         if (window.simTargetSide) {
             switch (window.simTargetSide) {
-                case 'z_up': simAccel = { x: 0, y: 0, z: 1 }; break;
-                case 'z_down': simAccel = { x: 0, y: 0, z: -1 }; break;
-                case 'x_up': simAccel = { x: 1, y: 0, z: 0 }; break;
-                case 'x_down': simAccel = { x: -1, y: 0, z: 0 }; break;
-                case 'y_up': simAccel = { x: 0, y: 1, z: 0 }; break;
-                case 'y_down': simAccel = { x: 0, y: -1, z: 0 }; break;
+                case 'z_down': simAccel = { x: 0, y: 0, z: -1 }; break; // 平放
+                case 'z_up': simAccel = { x: 0, y: 0, z: 1 }; break; // 倒扣
+                case 'x_up': simAccel = { x: 1, y: 0, z: 0 }; break; // 抬头
+                case 'x_down': simAccel = { x: -1, y: 0, z: 0 }; break; // 低头
+                case 'y_up': simAccel = { x: 0, y: 1, z: 0 }; break; // 左侧下 (Y朝天)
+                case 'y_down': simAccel = { x: 0, y: -1, z: 0 }; break; // 右侧下 (Y朝地)
             }
             // 模拟随机抖动
             simAccel.x += (Math.random() - 0.5) * 0.02;

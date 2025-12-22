@@ -14,6 +14,7 @@
 #include "icp20100.h" 
 #include "lps22hh.h" // [新增] 引入 LPS22HH 驱动头文件
 #include <math.h> // [必须] 引入 math.h 用于 pow() 函数
+
 static const char* TAG = "TASK_SENSOR";
 
 // --- 静态硬件对象 ---
@@ -59,6 +60,7 @@ static float accel_scale_x = 1.0f;
 static float accel_scale_y = 1.0f;
 static float accel_scale_z = 1.0f;
 
+// 气压转海拔计算
 static float calculate_altitude(float pressure_kpa)
 {
     // 标准海平面气压 101.325 kPa
@@ -67,7 +69,6 @@ static float calculate_altitude(float pressure_kpa)
 
     // 公式: h = 44330 * (1 - (P / P0)^(1/5.255))
     // 注意：这里计算的是"气压高度"，即假设当前处于标准大气压环境下的相对高度。
-    // 实际绝对海拔受天气系统（高压/低压）影响，但短时间内的相对变化（如上楼）是非常准的。
     return 44330.0f * (1.0f - powf(pressure_kpa / P0, 0.1903f));
 }
 
@@ -101,23 +102,22 @@ static void task_sensor_entry(void* arg)
     vTaskDelay(pdMS_TO_TICKS(50));
 
     // ==========================================
-    // [新增] 注册磁力计参数
+    // [新增] 注册校准参数
     // ==========================================
-    // 这样网页就可以通过 set_param 修改它们，且开机自动读取 NVS
+    // 注册 Mag 参数
     params.register_float("MAG_OFFSET_X", &mag_offset_x, 0.0f);
     params.register_float("MAG_OFFSET_Y", &mag_offset_y, 0.0f);
     params.register_float("MAG_OFFSET_Z", &mag_offset_z, 0.0f);
-
     params.register_float("MAG_SCALE_X", &mag_scale_x, 1.0f);
     params.register_float("MAG_SCALE_Y", &mag_scale_y, 1.0f);
     params.register_float("MAG_SCALE_Z", &mag_scale_z, 1.0f);
 
-    // Gyro
+    // 注册 Gyro 参数
     params.register_float("GYRO_OFFSET_X", &gyro_offset_x, 0.0f);
     params.register_float("GYRO_OFFSET_Y", &gyro_offset_y, 0.0f);
     params.register_float("GYRO_OFFSET_Z", &gyro_offset_z, 0.0f);
 
-    // Accel
+    // 注册 Accel 参数
     params.register_float("ACCEL_OFFSET_X", &accel_offset_x, 0.0f);
     params.register_float("ACCEL_OFFSET_Y", &accel_offset_y, 0.0f);
     params.register_float("ACCEL_OFFSET_Z", &accel_offset_z, 0.0f);
@@ -125,24 +125,18 @@ static void task_sensor_entry(void* arg)
     params.register_float("ACCEL_SCALE_Y", &accel_scale_y, 1.0f);
     params.register_float("ACCEL_SCALE_Z", &accel_scale_z, 1.0f);
 
-    ESP_LOGI(TAG, "Mag Params Loaded. Off: (%.1f, %.1f, %.1f), Scale: (%.2f, %.2f, %.2f)",
-        mag_offset_x, mag_offset_y, mag_offset_z,
-        mag_scale_x, mag_scale_y, mag_scale_z);
+    ESP_LOGI(TAG, "Sensor Params Loaded.");
 
-    // ================== I2C 扫描器开始 ==================
+    // ================== I2C 扫描器 ==================
     ESP_LOGW(TAG, ">>> 开始 I2C 总线扫描 <<<");
     int devices_found = 0;
     for (int addr = 1; addr < 127; addr++)
     {
-        // 尝试向该地址发送一个空写命令
         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
         i2c_master_write_byte(cmd, (addr << 1) | I2C_MASTER_WRITE, true);
         i2c_master_stop(cmd);
 
-        // 发送命令，超时 50ms
-        // 注意：这里需要传入 I2C 端口号，我们假设 I2CBus 类使用了 I2C_NUM_0
-        // 如果你的 i2c_bus.cpp 里用的不是 0，请修改这里
         esp_err_t ret = i2c_master_cmd_begin(I2C_NUM_0, cmd, pdMS_TO_TICKS(50));
         i2c_cmd_link_delete(cmd);
 
@@ -150,30 +144,22 @@ static void task_sensor_entry(void* arg)
         {
             ESP_LOGI(TAG, "发现 I2C 设备: 0x%02X", addr);
             devices_found++;
-
-            // 简单判断一下是谁
             if (addr == 0x0D) ESP_LOGI(TAG, "  -> 可能是 QMC5883L");
             if (addr == 0x63) ESP_LOGI(TAG, "  -> 可能是 ICP-20100 (ADO=GND)");
             if (addr == 0x64) ESP_LOGI(TAG, "  -> 可能是 ICP-20100 (ADO=High)");
-            if (addr == 0x5C) ESP_LOGI(TAG, "  -> 可能是 LPS22HH (SA0=GND)"); // [新增]
-            if (addr == 0x5D) ESP_LOGI(TAG, "  -> 可能是 LPS22HH (SA0=VCC)"); // [新增]
+            if (addr == 0x5C) ESP_LOGI(TAG, "  -> 可能是 LPS22HH (SA0=GND)");
+            if (addr == 0x5D) ESP_LOGI(TAG, "  -> 可能是 LPS22HH (SA0=VCC)");
         }
     }
-    if (devices_found == 0)
-    {
-        ESP_LOGE(TAG, "未发现任何 I2C 设备！请检查 SDA/SCL 接线！");
-    }
-    ESP_LOGW(TAG, ">>> 扫描结束，共发现 %d 个设备 <<<", devices_found);
+    if (devices_found == 0) ESP_LOGE(TAG, "未发现任何 I2C 设备！");
+    ESP_LOGW(TAG, ">>> 扫描结束，共 %d 个设备 <<<", devices_found);
 
     // 初始化磁力计
     if (mag.begin() != ESP_OK) ESP_LOGE(TAG, "Mag Init Failed");
 
     // =======================================================
-    // [修改] 气压计自动探测逻辑
-    // 优先级：LPS22HH (0x5C) > LPS22HH (0x5D) > ICP20100
+    // 气压计自动探测逻辑 (LPS22HH > ICP20100)
     // =======================================================
-
-    // 1. 尝试 LPS22HH 地址 0x5C (SA0 接地)
     static LPS22HH lps_5c(&i2c_bus, 0x5C);
     if (lps_5c.begin() == ESP_OK)
     {
@@ -183,7 +169,6 @@ static void task_sensor_entry(void* arg)
     }
     else
     {
-        // 2. 尝试 LPS22HH 地址 0x5D (SA0 接 VCC)
         static LPS22HH lps_5d(&i2c_bus, 0x5D);
         if (lps_5d.begin() == ESP_OK)
         {
@@ -193,7 +178,6 @@ static void task_sensor_entry(void* arg)
         }
         else
         {
-            // 3. 尝试 ICP20100 (回退兼容旧硬件)
             if (baro_icp.begin() == ESP_OK)
             {
                 active_baro = BARO_ICP20100;
@@ -218,41 +202,62 @@ static void task_sensor_entry(void* arg)
         // 等待 IMU 中断 (200Hz)
         if (xSemaphoreTake(sem_imu_drdy, pdMS_TO_TICKS(20)) == pdTRUE)
         {
+            // --- A. 读取 IMU 原始数据 ---
+            float ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw;
+            imu.getAccel(&ax_raw, &ay_raw, &az_raw);
+            imu.getGyro(&gx_raw, &gy_raw, &gz_raw);
 
-            // --- A. 读取 IMU ---
-            // 1. 读取原始数据 (Raw)
-            float ax, ay, az, gx, gy, gz;
-            imu.getAccel(&ax, &ay, &az);
-            imu.getGyro(&gx, &gy, &gz);
+            // =========================================================
+            // [坐标系映射] SENSOR (Y前, X右, Z上) -> BODY FRD (X前, Y右, Z下)
+            // =========================================================
 
-            // 2. [关键] 应用 Accel 校准: (Raw - Offset) * Scale
+            // 1. 机体 X (前) = 传感器 Y (前)
+            float ax = ay_raw;
+            float gx = gy_raw;
+
+            // 2. 机体 Y (右) = 传感器 X (右)
+            // 两个都向右，所以直接赋值，不需要负号
+            float ay = ax_raw;
+            float gy = gx_raw;
+
+            // 3. 机体 Z (下) = -传感器 Z (上)
+            // 必须取反，符合 FRD 右手系
+            float az = -az_raw;
+            float gz = -gz_raw;
+
+            // =========================================================
+
+            // 4. [关键] 应用校准 (在机体坐标系下进行)
             imu_data.ax = (ax - accel_offset_x) * accel_scale_x;
             imu_data.ay = (ay - accel_offset_y) * accel_scale_y;
             imu_data.az = (az - accel_offset_z) * accel_scale_z;
 
-            // 3. [关键] 应用 Gyro 校准: Raw - Offset
             imu_data.gx = gx - gyro_offset_x;
             imu_data.gy = gy - gyro_offset_y;
             imu_data.gz = gz - gyro_offset_z;
 
             imu_data.timestamp_us = esp_timer_get_time();
             bus.imu.publish(imu_data);
+
             // --- B. 分频读取磁力计 (100Hz -> 2分频) ---
             if (tick_counter % 2 == 0)
             {
                 if (mag.isDataReady())
                 {
-                    // 1. 先读到临时变量里 (Raw Data)
                     float raw_x, raw_y, raw_z;
+                    float mag_body_x, mag_body_y, mag_body_z;
                     mag.readData(&raw_x, &raw_y, &raw_z);
 
-                    // 2. [关键修复] 应用校准参数！
-                    // 公式: (原始值 - 零偏) * 缩放系数
-                    mag_data.x = (raw_x - mag_offset_x) * mag_scale_x;
-                    mag_data.y = (raw_y - mag_offset_y) * mag_scale_y;
-                    mag_data.z = (raw_z - mag_offset_z) * mag_scale_z;
+                    // 1. 同样的坐标映射 FRD
+                    mag_body_x = raw_y;   // Y -> X
+                    mag_body_y = raw_x;   // X -> Y
+                    mag_body_z = -raw_z;  // Z -> -Z
 
-                    // 3. 发布校准后的数据
+                    // 2. 应用校准
+                    mag_data.x = (mag_body_x - mag_offset_x) * mag_scale_x;
+                    mag_data.y = (mag_body_y - mag_offset_y) * mag_scale_y;
+                    mag_data.z = (mag_body_z - mag_offset_z) * mag_scale_z;
+
                     bus.mag.publish(mag_data);
                 }
             }
@@ -261,32 +266,21 @@ static void task_sensor_entry(void* arg)
             if (tick_counter % 4 == 0)
             {
                 esp_err_t ret = ESP_FAIL;
-
-                // [修改] 根据活跃的气压计类型读取数据
                 if (active_baro == BARO_LPS22HH && baro_lps != nullptr)
-                {
                     ret = baro_lps->readData(&baro_data.pressure, &baro_data.temperature);
-                }
                 else if (active_baro == BARO_ICP20100)
-                {
                     ret = baro_icp.readData(&baro_data.pressure, &baro_data.temperature);
-                }
 
-                // 如果读取成功，发布数据
-                if (ret == ESP_OK)
-                {
-                    bus.baro.publish(baro_data);
-                }
+                if (ret == ESP_OK) bus.baro.publish(baro_data);
             }
 
             // 调试打印 (1秒一次)
             if (tick_counter % 200 == 0)
             {
-                // 实时计算海拔
                 float alt = calculate_altitude(baro_data.pressure);
-
-                ESP_LOGI(TAG, "IMU: %.2f | Mag: %.2f | Press: %.3f kPa | Alt: %.2f m",
-                    imu_data.az, mag_data.z, baro_data.pressure, alt);
+                ESP_LOGI(TAG, "IMU(FRD): %.2f %.2f %.2f | Mag: %.2f %.2f | Alt: %.1fm",
+                    imu_data.ax, imu_data.ay, imu_data.az,
+                    mag_data.x, mag_data.y, alt);
             }
 
             tick_counter++;
