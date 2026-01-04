@@ -278,9 +278,9 @@ static void task_sensor_entry(void* arg)
             if (tick_counter % 200 == 0)
             {
                 float alt = calculate_altitude(baro_data.pressure);
-                ESP_LOGI(TAG, "IMU(FRD): %.2f %.2f %.2f | Mag: %.2f %.2f | Alt: %.1fm",
-                    imu_data.ax, imu_data.ay, imu_data.az,
-                    mag_data.x, mag_data.y, alt);
+                // ESP_LOGI(TAG, "IMU(FRD): %.2f %.2f %.2f | Mag: %.2f %.2f | Alt: %.1fm",
+                //     imu_data.ax, imu_data.ay, imu_data.az,
+                //     mag_data.x, mag_data.y, alt);
             }
 
             tick_counter++;
