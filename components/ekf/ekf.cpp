@@ -21,7 +21,7 @@ EspEKF::EspEKF()
 {
     // 1. 初始化状态向量 x (全0)
     // x = [Roll, Pitch, Yaw, Bias_Gx, Bias_Gy, Bias_Gz]^T
-    x.setZero();
+    state = NominalState();
 
     // 2. 初始化协方差矩阵 P (对角阵)
     // [Engineering] P 代表我们对当前状态 x 的"不确定度"。
@@ -52,13 +52,27 @@ EspEKF::EspEKF()
     is_initialized = true;
 }
 
-void EspEKF::init()
+void EspEKF::init(const Vector3f& accel_meas)
 {
-    // 复位所有状态，通常在解锁或断电重启时调用
-    x.setZero();
-    P.setIdentity();
-    P = P * 0.1f;
+    // 1. 归一化加速度 (只关心方向，不关心大小)
+    Vector3f acc_norm = accel_meas.normalized();
+
+    // 2. 计算初始 Roll 和 Pitch
+    // 2. 计算初始欧拉角 (根据重力分量反推)
+    // 注意：这里假设静止，所以加速度计测到的仅仅是重力方向
+    float pitch = atan2f(-acc_norm.x(), sqrtf(acc_norm.y() * acc_norm.y() + acc_norm.z() * acc_norm.z()));
+    float roll = atan2f(acc_norm.y(), acc_norm.z());
+    float yaw = 0.0f; // 暂时假设 Yaw 为 0 (或者以后接磁力计)
+    Eigen::AngleAxisf rollAngle(roll, Eigen::Vector3f::UnitX());
+    Eigen::AngleAxisf pitchAngle(pitch, Eigen::Vector3f::UnitY());
+    Eigen::AngleAxisf yawAngle(yaw, Eigen::Vector3f::UnitZ());
+
+    // 顺序：Z * Y * X (这是航空标准的旋转顺序)
+    state.q = yawAngle * pitchAngle * rollAngle;
+    state.q.normalize(); // 养成好习惯
+
     is_initialized = true;
+    ESP_LOGI(TAG, "EKF initialized with Roll: %.2f, Pitch: %.2f", roll, pitch);
 }
 
 // =========================================================================================
@@ -66,132 +80,160 @@ void EspEKF::init()
 // [Math] x_{k|k-1} = f(x_{k-1}, u_k)
 // [Math] P_{k|k-1} = F_k * P_{k-1} * F_k^T + Q_k
 // =========================================================================================
-void EspEKF::predict(const Vector3f& gyro, float dt)
+void EspEKF::predict(const Vector3f& gyro_meas, float dt)
 {
     if (!is_initialized) return;
 
-    // --- 1. 提取变量 (增加可读性) ---
-    float phi = x(0);   // Roll
-    float theta = x(1); // Pitch
-    float psi = x(2);   // Yaw
 
-    float bgx = x(3);   // Gyro Bias X
-    float bgy = x(4);   // Gyro Bias Y
-    float bgz = x(5);   // Gyro Bias Z
+    // 1. 去零偏 (直接向量减法)
+    Vector3f w_unbiased = gyro_meas - state.gyro_bias;
+    // 2. 计算旋转向量 (角度 * 轴)
+    Vector3f delta_theta = w_unbiased * dt;
+    float angle = delta_theta.norm();
 
-    // 减去估计的零偏，得到更准的角速度
-    float gx = gyro.x() - bgx;
-    float gy = gyro.y() - bgy;
-    float gz = gyro.z() - bgz;
+    // 3. 构建增量四元数 (利用 Eigen 的 AngleAxis 自动处理 sin/cos 和半角)
+    Eigen::Quaternionf delta_q;
 
-    // --- 2. 更新状态向量 x (非线性状态转移) ---
-    // [Math] 姿态微分方程 (小角度近似，假设机体角速度 ≈ 欧拉角速度)
-    // 如果是大机动，这里应该使用旋转矩阵运动学方程: \dot{\Theta} = W \cdot \omega
-    // 对于无人机悬停和平稳飞行，简单的积分通常足够。
-    float new_phi = phi + gx * dt;
-    float new_theta = theta + gy * dt;
-    float new_psi = psi + gz * dt;
+    if (angle > 1e-6f)
+    {
+        // 大角度：使用精确公式
+        // axis = delta_theta / angle (归一化轴)
+        delta_q = Eigen::AngleAxisf(angle, delta_theta / angle);
+    }
+    else
+    {
+        // 小角度近似 (泰勒展开，避免除以0)
+        // [1, 0.5*dx, 0.5*dy, 0.5*dz]
+        delta_q = Eigen::Quaternionf(1.0f, 0.5f * delta_theta.x(), 0.5f * delta_theta.y(), 0.5f * delta_theta.z());
+        delta_q.normalize();
+    }
 
-    // [Engineering] 归一化角度，处理 +180 -> -180 的跳变问题
-    x(0) = normalize_angle(new_phi);
-    x(1) = normalize_angle(new_theta);
-    x(2) = normalize_angle(new_psi);
+    // 4. 姿态更新 (右乘，因为是机体坐标系的旋转)
+    state.q = state.q * delta_q;
 
-    // Bias 保持不变 (假设为常量或随机游走模型: \dot{b} = 0 + noise)
+    // 5. 归一化 (防止积分漂移导致模长不为1)
+    state.q.normalize();
 
-    // --- 3. 计算雅可比矩阵 F (State Transition Jacobian) ---
-    // [Math] F = \frac{\partial f}{\partial x}
-    // 描述当前状态的微小变化如何传递到下一个时刻
-    Matrix<float, X_DIM, X_DIM> F;
-    F.setIdentity(); // 对角线为1，表示状态会保持下去
+    // ==========================================
+    // P 矩阵预测 (Error State Covariance Update)
+    // F = [ I   -dt * I ]
+    //     [ 0      I    ]
+    // ==========================================
 
-    // 填充偏导数项：角度对 Bias 的偏导
-    // new_phi = phi - bgx * dt  => d(new_phi)/d(bgx) = -dt
-    F(0, 3) = -dt;
-    F(1, 4) = -dt;
-    F(2, 5) = -dt;
+    // 1. 构建 F 矩阵 (6x6)
+    MatrixP F;
+    F.setIdentity(); // 先填满对角线为 1
 
-    // --- 4. 更新协方差矩阵 P ---
-    // [Math] P = F P F^T + Q
-    // 预测步骤会增加不确定性 (加 Q)
+    // 右上角块：角度误差受零偏误差的影响
+    // 物理意义：如果 Bias 估错了 1 deg/s，经过 dt 秒，角度就会错 dt 度。
+    // 符号是负的，因为 state.q = state.q * delta_q，而测量值是 w - bias
+    F.block<3, 3>(0, 3) = -dt * Matrix3f::Identity();
+
+    // 2. 更新 P 矩阵
+    // P = F * P * F^T + Q
+    // 这一步告诉滤波器：随着时间推移，因为有积分，我们的不确定性(P)会越来越大
     P = F * P * F.transpose() + Q;
 
-    // [Engineering] 强制对称性，消除数值计算误差
-    P = 0.5f * (P + P.transpose());
 }
 
-// =========================================================================================
-// 更新步：融合加速度计 (Fuse Accelerometer)
-// 用于修正 Roll 和 Pitch
-// =========================================================================================
-void EspEKF::fuse_accel(const Vector3f& accel)
+void EspEKF::fuse_accel(const Vector3f& accel_meas)
 {
     if (!is_initialized) return;
 
-    // [Engineering] 震动/异常保护
-    // 如果加速度模长偏离 1g 太远 (比如 >1.5g 或 <0.5g)，说明有非重力加速度干扰，不应融合。
-    // 这里简单处理：如果太小认为是自由落体或错误，不融合。
-    if (accel.norm() < 0.1f) return;
+    // [Engineering] 异常保护
+    // 只有当加速度模长接近 1g (9.8 m/s^2 或 1.0g) 时，我们才认为它是重力。
+    // 如果模长太大（震动/转弯离心力）或太小（自由落体），说明加速度计测的不是纯重力，不能用来修姿态。
+    float acc_norm = accel_meas.norm();
+    if (acc_norm < 0.8f || acc_norm > 1.2f)
+    {
+        return; // 放弃这次更新，相信陀螺仪积分
+    }
 
-    // 归一化观测向量 (我们只关心重力的方向)
-    Vector3f z = accel.normalized();
+    // 1. 准备测量值 (z)
+    // 归一化，因为我们只关心重力的"方向"来修正姿态
+    Vector3f z = accel_meas.normalized();
 
-    // --- 1. 提取当前姿态 ---
-    float phi = x(0);
-    float theta = x(1);
-    // Yaw 对重力投影没有影响，所以这里不需要 psi
+    // 2. 准备预测值 h(x)
+    // 利用当前名义姿态 state.q，把世界系重力 [0,0,1] 旋转到机体坐标系
+    // [Math] g_pred = R(q)^T * [0,0,1]
+    // Eigen 的 inverse() * vector 自动处理了共轭旋转 (即 R^T * v)
+    Vector3f g_world = Vector3f::UnitZ();
+    Vector3f g_pred = state.q.inverse() * g_world;
 
-    float sp = sin(phi);   float cp = cos(phi);
-    float st = sin(theta); float ct = cos(theta);
+    // 3. 计算残差 (Innovation)
+    // [Math] y = z - h(x)
+    Vector3f y = z - g_pred;
 
-    // --- 2. 计算预测观测值 h(x) ---
-    // [Math] 坐标系定义: FRD (前-右-下)
-    // 导航系重力向量: g_n = [0, 0, 1]^T (指向地心，正Z)
-    // 加速度计测量的是比力 (Reaction Force): a_m = -R_{nb}^T * g_n = R_{nb}^T * [0, 0, -1]^T
-    // 这相当于旋转矩阵 R_{nb} 的第3列乘以 -1。
-    // R_{nb} (3-2-1 Euler) 的第3列为: [-sin\theta, sin\phi cos\theta, cos\phi cos\theta]^T
-    // 取反后得到 h(x):
-    Vector3f h_x;
-    h_x(0) = st;           // sin(theta)
-    h_x(1) = -sp * ct;     // -sin(phi) * cos(theta)
-    h_x(2) = -cp * ct;     // -cos(phi) * cos(theta)
-
-    // --- 3. 计算残差 (Innovation) ---
-    Vector3f y = z - h_x;
-
-    // --- 4. 计算雅可比矩阵 H (Observation Jacobian) ---
-    // [Math] H = \frac{\partial h}{\partial x} (3x6矩阵)
-    Matrix<float, 3, X_DIM> H;
+    // 4. 构建观测雅可比矩阵 H (Measurement Jacobian)
+    // [Math] H = [ [g_pred]x   0 ]  (维度 3x6)
+    // 左边是 g_pred 的反对称矩阵，右边是 0 (因为加速度计无法观测陀螺仪零偏)
+    Eigen::Matrix<float, 3, DIM_ERR> H;
     H.setZero();
 
-    // 对 h_x[0] = sin(theta) 求导
-    H(0, 1) = ct;          // d/dtheta
+    // 填充左上角 3x3 (反对称矩阵 Skew-symmetric matrix)
+    // [  0   -gz   gy ]
+    // [  gz   0   -gx ]
+    // [ -gy   gx    0 ]
+    H(0, 1) = -g_pred.z();
+    H(0, 2) = g_pred.y();
+    H(1, 0) = g_pred.z();
+    H(1, 2) = -g_pred.x();
+    H(2, 0) = -g_pred.y();
+    H(2, 1) = g_pred.x();
 
-    // 对 h_x[1] = -sin(phi)cos(theta) 求导
-    H(1, 0) = -cp * ct;    // d/dphi
-    H(1, 1) = sp * st;     // d/dtheta (注意 cos导数是-sin，负负得正)
+    // 5. 计算卡尔曼增益 K
+    // [Math] S = H * P * H^T + R
+    // [Math] K = P * H^T * S^-1
 
-    // 对 h_x[2] = -cos(phi)cos(theta) 求导
-    H(2, 0) = sp * ct;     // d/dphi (cos导数是-sin，负负得正)
-    H(2, 1) = cp * st;     // d/dtheta
+    // R_accel 是 3x3 矩阵
+    Eigen::Matrix3f S = H * P * H.transpose() + R_accel;
 
-    // --- 5. 标准 EKF 更新 ---
+    // 计算 K (6x3 矩阵)
+    // 这里的 S.inverse() 对 3x3 矩阵很快，不用担心性能
+    Eigen::Matrix<float, DIM_ERR, 3> K = P * H.transpose() * S.inverse();
 
-    // 计算残差协方差 S = H P H^T + R
-    Matrix<float, 3, 3> S = H * P * H.transpose() + R_accel;
+    // 6. 计算误差状态 delta_x (Error State)
+    // [Math] dx = K * y
+    // delta_x 是 6维向量: [d_roll, d_pitch, d_yaw, d_bgx, d_bgy, d_bgz]
+    Eigen::Matrix<float, DIM_ERR, 1> delta_x = K * y;
 
-    // 计算卡尔曼增益 K = P H^T S^{-1}
-    Matrix<float, X_DIM, 3> K = P * H.transpose() * S.inverse();
+    // ==========================================================
+    // 7. 误差注入 (Error Injection) - ES-EKF 的灵魂
+    // 这一步把算出来的"线性误差"融合进"非线性真身"里
+    // ==========================================================
 
-    // 更新状态 x = x + K * y
-    // [Math] x_new = x_old + Gain * Error
-    x = x + K * y;
+    // A. 修正姿态 (名义四元数)
+    // 取出前 3 维 (角度误差)
+    Vector3f delta_theta = delta_x.head<3>();
 
-    // 更新协方差 P = (I - K H) P
-    // [Math] 更新步会减小不确定性
-    Matrix<float, X_DIM, X_DIM> I;
+    // 把角度误差向量转换成微小旋转四元数
+    // 使用小角度近似: dq = [1, 0.5*dx, 0.5*dy, 0.5*dz]
+    Eigen::Quaternionf dq;
+    dq.w() = 1.0f;
+    dq.vec() = 0.5f * delta_theta; // 实部是1，虚部是角度的一半
+
+    // 注入误差：q_new = q_old * dq
+    state.q = state.q * dq;
+    state.q.normalize(); // 必须归一化，否则误差累积会导致模长发散
+
+    // B. 修正零偏 (名义零偏)
+    // 取出后 3 维 (零偏误差) 并直接加到当前零偏上
+    state.gyro_bias += delta_x.tail<3>();
+
+    // ==========================================================
+    // 8. 协方差更新 (Update Covariance)
+    // ==========================================================
+    // [Math] P = (I - K*H) * P
+    // 更新 P 矩阵，表示我们通过测量，不确定性减小了
+    Eigen::Matrix<float, DIM_ERR, DIM_ERR> I;
     I.setIdentity();
+
+    // 使用 Joseph form 公式会更数值稳定，但这里用简易版 (I-KH)P 足够了
     P = (I - K * H) * P;
+
+    // [注意] 我们不需要显式重置 delta_x，因为 delta_x 只是个局部变量。
+    // 在下一次 predict 循环中，我们依然假设误差均值为 0。
+    // 我们已经把这次算出来的 delta_x "吃"进 state.q 和 state.gyro_bias 里了。
 }
 
 // =========================================================================================
@@ -202,99 +244,126 @@ void EspEKF::fuse_accel(const Vector3f& accel)
 // 更新步：融合磁力计 (改进版：倾斜补偿航向融合)
 // 解决 "磁力计干扰 Roll/Pitch" 和 "磁倾角导致平放不平" 的问题
 // =========================================================================================
-void EspEKF::fuse_mag(const Vector3f& mag)
+// =========================================================================================
+// ES-EKF 更新步：融合磁力计 (Fuse Magnetometer)
+// 核心策略：只修正 Yaw 轴，不干扰 Roll/Pitch
+// =========================================================================================
+void EspEKF::fuse_mag(const Vector3f& mag_meas)
 {
     if (!is_initialized) return;
 
-    // [Engineering] 异常保护: 磁场模长过大过小都可能是干扰
-    float mag_norm = mag.norm();
+    // [Engineering] 异常保护
+    // 磁场模长剧烈变化通常意味着有电机干扰或铁磁物体靠近
+    float mag_norm = mag_meas.norm();
     if (mag_norm < 0.1f || mag_norm > 10.0f) return;
 
-    // --- 1. 获取当前姿态 (Roll/Pitch) ---
-    // 我们信任加速度计和陀螺仪算出来的水平姿态
-    float phi = x(0);
-    float theta = x(1);
-    float psi = x(2); // 当前估计的 Yaw
+    // 1. 归一化测量值
+    Vector3f m_body = mag_meas.normalized();
 
-    float sp = sin(phi);   float cp = cos(phi);
-    float st = sin(theta); float ct = cos(theta);
+    // 2. 将机体坐标系下的磁场，旋转回世界坐标系 (Estimate World Mag)
+    // 利用当前预测的姿态 state.q
+    // [Math] m_world_pred = q * m_body * q^{-1}
+    Vector3f m_world = state.q * m_body;
 
-    // --- 2. 倾斜补偿 (Tilt Compensation) ---
-    // 将机体坐标系下的磁力计读数，反向旋转回“水平面” (Horizontal Plane)
-    // 公式推导基于 FRD 旋转矩阵的逆变换
+    // 3. 计算残差 (Yaw Error)
+    // 在世界系下，磁场向量投影到水平面 (X-Y平面) 的角度，就是当前的实测航向
+    // atan2(y, x) 计算的是 m_world 在世界系下的角度
+    float yaw_measured = atan2(m_world.y(), m_world.x());
 
-    float mag_x = mag.x();
-    float mag_y = mag.y();
-    float mag_z = mag.z();
+    // 我们期望的参考磁场方向应该是正北 (或者初始设定的任意 0 度方向)
+    // 所以这里的 residual 就是 measured_yaw - 0
+    // [Engineering] 这一步非常关键：我们通过旋转回世界系，巧妙地把 Roll/Pitch 的影响消除了
+    float yaw_residual = yaw_measured;
 
-    // 在水平面上，磁向量的 X 分量 (指向磁北)
-    // Bx = mx * cos(theta) + my * sin(theta)*sin(phi) + mz * sin(theta)*cos(phi)
-    float Bx = mag_x * ct + mag_y * st * sp + mag_z * st * cp;
+    // 角度归一化 (限制在 -PI 到 +PI)
+    while (yaw_residual > M_PI)  yaw_residual -= 2.0f * M_PI;
+    while (yaw_residual < -M_PI) yaw_residual += 2.0f * M_PI;
 
-    // 在水平面上，磁向量的 Y 分量 (指向磁东)
-    // By = my * cos(phi) - mz * sin(phi)
-    float By = mag_y * cp - mag_z * sp;
-
-    // --- 3. 计算实测航向角 (Measured Yaw) ---
-    // atan2(y, x) 返回范围 [-PI, PI]
-    // 注意 FRD 坐标系下，Yaw 顺时针为正，而 atan2 逆时针为正，所以通常需要负号
-    // 但根据右手定则和 atan2 定义：heading = atan2(-By, Bx)
-    float yaw_measured = atan2(-By, Bx);
-
-    // --- 4. 计算残差 (Innovation) ---
-    // 也就是 "测量值 - 预测值"
-    float yaw_predicted = psi;
-
-    // [关键] 处理角度周期性问题 (-180 度 和 +180 度是同一个点)
-    // 我们需要算出最小的旋转路径
-    float yaw_error = normalize_angle(yaw_measured - yaw_predicted);
-
-    // --- 5. 构建雅可比矩阵 H ---
-    // 我们的观测方程简化为: y = x(2) + noise
-    // 所以 H 矩阵只有 Yaw 那一项是 1，其他是 0
-    // 这意味着：磁力计只准修正 Yaw，绝对不准碰 Roll 和 Pitch！
-    Matrix<float, 1, X_DIM> H;
+    // 4. 构建雅可比矩阵 H (1x6)
+    // 我们构建一个"虚拟观测"：z = yaw
+    // 所以 H 矩阵只需要对应 Yaw 误差的状态，即 delta_theta_z (索引 2)
+    // [Math] H = [0, 0, 1, 0, 0, 0]
+    Eigen::Matrix<float, 1, DIM_ERR> H;
     H.setZero();
-    H(0, 2) = 1.0f;
+    H(0, 2) = 1.0f; // 强行指定：这个残差只与 Yaw 误差有关
 
-    // --- 6. 标准 EKF 更新 (标量版) ---
-    // 因为观测维数变成了 1 维 (只观测 Yaw)，矩阵运算简化为标量运算
+    // 5. 计算卡尔曼增益 K
+    // 此时观测维度是 1 (标量)
 
-    // S = H P H^T + R
-    // 提取 P 矩阵中 Yaw 的方差 P(2,2)
+    // [Math] S = H P H^T + R
+    // 提取 P(2,2) 即 Yaw 的方差
     float P_yaw = P(2, 2);
-    float S = P_yaw + R_mag(0, 0); // R_mag 这里取一个标量值即可
+    float S = P_yaw + R_mag(0, 0); // R_mag 取第一个元素作为方差
 
-    // K = P H^T S^-1
-    // 计算卡尔曼增益向量
-    VectorX K = P.col(2) * (1.0f / S);
+    // [Math] K = P H^T S^{-1}
+    // K 是一个 6x1 的向量 (6行1列)
+    // P.col(2) 取出 P 的第3列 (对应 Yaw 误差与其他状态的协方差)
+    Eigen::Matrix<float, DIM_ERR, 1> K = P.col(2) * (1.0f / S);
 
-    // 更新状态 x = x + K * error
-    x = x + K * yaw_error;
+    // 6. 计算误差状态 delta_x
+    // dx = K * y (向量 * 标量)
+    Eigen::Matrix<float, DIM_ERR, 1> delta_x = K * yaw_residual;
 
-    // 再次归一化角度，防止更新后溢出
-    x(0) = normalize_angle(x(0));
-    x(1) = normalize_angle(x(1));
-    x(2) = normalize_angle(x(2));
+    // ==========================================================
+    // 7. 误差注入 (Error Injection) - 与 fuse_accel 完全一致
+    // ==========================================================
 
-    // 更新协方差 P = (I - K H) P
-    Matrix<float, X_DIM, X_DIM> I;
+    // A. 修正姿态
+    Vector3f delta_theta = delta_x.head<3>();
+    Eigen::Quaternionf dq;
+    dq.w() = 1.0f;
+    dq.vec() = 0.5f * delta_theta;
+
+    state.q = state.q * dq;
+    state.q.normalize();
+
+    // B. 修正零偏
+    state.gyro_bias += delta_x.tail<3>();
+
+    // ==========================================================
+    // 8. 协方差更新
+    // ==========================================================
+    Eigen::Matrix<float, DIM_ERR, DIM_ERR> I;
     I.setIdentity();
-    // K * H 会得到一个 6x6 矩阵，其中只有第 3 列(索引2)有值
     P = (I - K * H) * P;
 }
-
-Vector3f EspEKF::get_euler_angles()
+Eigen::Vector3f EspEKF::get_euler_angles()
 {
-    // 返回 [Roll, Pitch, Yaw]
-    return Vector3f(x(0), x(1), x(2));
+    // 将四元数转换为欧拉角 (Z-Y-X 顺序: Yaw, Pitch, Roll)
+    // Eigen 的 eulerAngles 返回的是 [0, 1, 2] 对应 [Yaw, Pitch, Roll]
+    // 但为了稳健性，推荐使用手动计算公式
+
+    // 提取四元数分量
+    float qw = state.q.w();
+    float qx = state.q.x();
+    float qy = state.q.y();
+    float qz = state.q.z();
+
+    // Roll (x-axis rotation)
+    float sinr_cosp = 2.0f * (qw * qx + qy * qz);
+    float cosr_cosp = 1.0f - 2.0f * (qx * qx + qy * qy);
+    float roll = atan2(sinr_cosp, cosr_cosp);
+
+    // Pitch (y-axis rotation)
+    float sinp = 2.0f * (qw * qy - qz * qx);
+    float pitch;
+    if (std::abs(sinp) >= 1.0f)
+        pitch = std::copysign(M_PI / 2.0f, sinp); // use 90 degrees if out of range
+    else
+        pitch = asin(sinp);
+
+    // Yaw (z-axis rotation)
+    float siny_cosp = 2.0f * (qw * qz + qx * qy);
+    float cosy_cosp = 1.0f - 2.0f * (qy * qy + qz * qz);
+    float yaw = atan2(siny_cosp, cosy_cosp);
+
+    return Vector3f(roll, pitch, yaw);
 }
 
-Vector3f EspEKF::get_gyro_bias()
+Eigen::Vector3f EspEKF::get_gyro_bias()
 {
-    // 返回估计的陀螺仪零偏 [BiasX, BiasY, BiasZ] (Z轴零偏我们没有在predict里建模，这里返回0即可)
-    // 修正：实际上我们在 x(3), x(4), x(5) 中都有状态，应该全部返回
-    return Vector3f(x(3), x(4), x(5));
+    // 直接返回名义状态中的零偏
+    return state.gyro_bias;
 }
 
 // 参数动态调整接口

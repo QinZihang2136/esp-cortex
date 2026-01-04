@@ -13,7 +13,7 @@ void task_estimator_entry(void* arg)
     // 1. 实例化数学核心
     // 这里是在栈上创建的，没问题，因为 Task 的栈足够大且一直存在
     EspEKF ekf;
-    ekf.init();
+    ekf.init(Eigen::Vector3f(0.0f, 0.0f, 9.8f)); // 假设初始静止，朝上放置
 
     // 2. 注册总线监听
     // 我们需要告诉 RobotBus: "当 IMU 更新时，请叫醒我"
@@ -55,12 +55,12 @@ void task_estimator_entry(void* arg)
             if (dt > 0.1f) dt = 0.01f;
 
             // --- A. 核心预测步骤 ---
-            Vector3f gyro(imu_data.gx, imu_data.gy, imu_data.gz);
+            Eigen::Vector3f gyro(imu_data.gx, imu_data.gy, imu_data.gz);
             ekf.predict(gyro, dt);
             // ==========================================
             // [新增] --- B. 观测修正步骤 ---
             // ==========================================
-            Vector3f accel(imu_data.ax, imu_data.ay, imu_data.az);
+            Eigen::Vector3f accel(imu_data.ax, imu_data.ay, imu_data.az);
 
             // 只有当合力接近 1g (9.8 m/s^2) 时才进行修正
             // 如果飞机在剧烈机动（比如大过载转弯），加速度计测的不仅仅是重力，
@@ -78,12 +78,12 @@ void task_estimator_entry(void* arg)
                 // 只有当磁力计数据有效（不是全0）时才融合
                 if (mag_data_snapshot.x != 0.0f || mag_data_snapshot.y != 0.0f)
                 {
-                    Vector3f mag_vec(mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z);
+                    Eigen::Vector3f mag_vec(mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z);
                     ekf.fuse_mag(mag_vec);
                 }
             }
             // --- B. 发布姿态 ---
-            Vector3f euler = ekf.get_euler_angles();
+            Eigen::Vector3f euler = ekf.get_euler_angles();
 
             AttitudeData att;
             att.roll = euler.x() * 57.29578f;  // 弧度转角度 (rad -> deg)

@@ -65,5 +65,14 @@
     // switch case 里的内容缩进
     "C_Cpp.vcFormat.indent.caseLabels": true,
     // 指针 * 号靠左: int* p
-    "C_Cpp.vcFormat.space.pointerReferenceAlignment": "left"
+    "C_Cpp.vcFormat.space.pointerReferenceAlignment": "left",
+    "ROS2.distro": "humble",
+    "python.autoComplete.extraPaths": [
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
 }
