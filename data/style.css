@@ -137,3 +137,58 @@ input[type=number]::-webkit-outer-spin-button {
         transform: translateY(0);
     }
 }
+
+/* 双向进度条容器 */
+.bi-bar-container {
+    height: 16px;
+    background-color: #e9ecef;
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+    display: flex;
+}
+
+/* 中线标记 */
+.bi-bar-center-line {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background-color: #6c757d;
+    /* 灰色中线 */
+    z-index: 5;
+    transform: translateX(-50%);
+}
+
+/* 左侧条 (负值) */
+.bi-bar-left {
+    width: 50%;
+    display: flex;
+    justify-content: flex-end;
+    /* 让条从右向左长 */
+}
+
+.bi-bar-left-inner {
+    height: 100%;
+    width: 0%;
+    background-color: #dc3545;
+    /* 红色 */
+    transition: width 0.1s linear;
+}
+
+/* 右侧条 (正值) */
+.bi-bar-right {
+    width: 50%;
+    display: flex;
+    justify-content: flex-start;
+    /* 让条从左向右长 */
+}
+
+.bi-bar-right-inner {
+    height: 100%;
+    width: 0%;
+    background-color: #198754;
+    /* 绿色 */
+    transition: width 0.1s linear;
+}

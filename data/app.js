@@ -1,3 +1,4 @@
+let lastMagPacket = null; // 缓存最新的磁力计数据
 // ================= 配置区 =================
 // 【重要】true = 电脑模拟模式; false = 真实连接模式
 const IS_SIMULATION = false;
@@ -171,12 +172,17 @@ function handleDataPacket(jsonObj) {
             update3DObject(payload.roll, payload.pitch, payload.yaw);
         }
 
-        // --- 磁力计校准数据流 ---
-        if (isCapturingMag && payload.mag) {
-            updateMagCalibrationLogic(payload.mag);
+        // --- 磁力计数据处理 ---
+        if (payload.mag) {
+            lastMagPacket = payload.mag; // [Fix] 缓存最新数据
+
+            // 磁力计校准数据流
+            if (isCapturingMag) {
+                updateMagCalibrationLogic(payload.mag);
+            }
         }
 
-        // --- IMU (Accel/Gyro) 校准数据流 ---
+        // --- IMU (Accel/Gyro) 数据处理 ---
         if (payload.imu) {
             // 陀螺仪采集
             if (isCalibratingGyro) {
@@ -188,7 +194,8 @@ function handleDataPacket(jsonObj) {
                 // 保存 {x, y, z} 格式
                 imuCalibData.sides[currentCalibSide].push({ x: payload.imu.ax, y: payload.imu.ay, z: payload.imu.az });
             }
-            // --- 方向校准采集逻辑 ---
+
+            // --- 方向自动检测采集逻辑 ---
             if (isCapturingOrient && targetOrientStep) {
                 // 采集 50 个点 (约 0.5~1秒)
                 if (orientRawBuffer.length < 50) {
@@ -197,7 +204,14 @@ function handleDataPacket(jsonObj) {
                     finishOrientStep();
                 }
             }
+
+            // [New] 驱动双向验证条 UI
             updateShakeTestUI(payload.imu);
+
+            // [New] 磁力计方向检查逻辑 (使用缓存的 Mag 数据)
+            if (isCheckingMag && lastMagPacket) {
+                processMagCheck(payload.imu, lastMagPacket);
+            }
         }
     }
     // 2. 参数列表
@@ -1065,47 +1079,193 @@ window.calcOrientation = function () {
         alert(`检测失败！未能匹配标准方向 (最小误差: ${minErr.toFixed(2)})\n\n可能原因：\n1. 采集时未保持静止\n2. 摆放姿态偏差过大\n3. 传感器本身有巨大零偏 (请先做一次粗略的 IMU 校准)`);
     }
 };
-// ================= 11. 摇晃验证 UI 驱动 =================
-
+// ================= 11. 摇晃验证 UI 驱动 (双向版) =================
 function updateShakeTestUI(imu) {
-    // 1. 检查验证框是否展开，如果没展开就不浪费计算资源
     const box = document.getElementById('shakeTestBox');
     if (!box || !box.classList.contains('show')) return;
 
-    // 2. 获取陀螺仪数据 (rad/s) 并取绝对值
-    // 假设正常晃动大约是 1~3 rad/s，我们设定 3.0 rad/s 为 100% 满格
-    const MAX_VAL = 3.0;
+    // 设定满量程 (rad/s), 比如 200度/秒 ≈ 3.5 rad/s
+    const MAX_VAL = 3.5;
 
-    // 这里的 gx, gy, gz 是经过 task_sensor 坐标转换后的 Body Frame 数据
-    const valX = Math.min(Math.abs(imu.gx), MAX_VAL);
-    const valY = Math.min(Math.abs(imu.gy), MAX_VAL);
-    const valZ = Math.min(Math.abs(imu.gz), MAX_VAL);
+    // 辅助函数：更新双向条
+    const setBiBar = (axis, val) => {
+        // 限制范围 -MAX ~ +MAX
+        let v = Math.max(-MAX_VAL, Math.min(MAX_VAL, val));
 
-    // 3. 转换为百分比
-    const pctX = (valX / MAX_VAL) * 100;
-    const pctY = (valY / MAX_VAL) * 100;
-    const pctZ = (valZ / MAX_VAL) * 100;
+        // 计算百分比 (0~100)
+        let pct = (Math.abs(v) / MAX_VAL) * 100;
 
-    // 4. 更新 DOM
-    document.getElementById('bar-shake-x').style.width = pctX + '%';
-    document.getElementById('bar-shake-y').style.width = pctY + '%';
-    document.getElementById('bar-shake-z').style.width = pctZ + '%';
+        const elNeg = document.getElementById(`bar-shake-${axis}-neg`);
+        const elPos = document.getElementById(`bar-shake-${axis}-pos`);
 
-    // 视觉反馈：如果 Roll 或 Yaw 动静太大 (>50%)，把它们变红警告用户
-    // 如果 Pitch 动静大，变绿表示正确
+        if (v < 0) {
+            // 负值：左条增长，右条为0
+            elNeg.style.width = pct + '%';
+            elPos.style.width = '0%';
+        } else {
+            // 正值：右条增长，左条为0
+            elNeg.style.width = '0%';
+            elPos.style.width = pct + '%';
+        }
+    };
 
-    const barX = document.getElementById('bar-shake-x');
-    const barY = document.getElementById('bar-shake-y');
-    const barZ = document.getElementById('bar-shake-z');
+    // 应用到三个轴 (注意：这里的 imu.gx/gy/gz 已经是固件 FRD 转换后的)
+    setBiBar('x', imu.gx);
+    setBiBar('y', imu.gy);
+    setBiBar('z', imu.gz);
+}
 
-    // X 和 Z 如果动得太厉害，说明轴不对 (或者用户手抖)
-    if (pctX > 30) barX.classList.replace('bg-secondary', 'bg-warning');
-    else barX.classList.replace('bg-warning', 'bg-secondary');
+// ================= 12. 磁力计方向检查逻辑 (完整修正版) =================
 
-    if (pctZ > 30) barZ.classList.replace('bg-secondary', 'bg-warning');
-    else barZ.classList.replace('bg-warning', 'bg-secondary');
+let isCheckingMag = false;
+let magCheckData = {
+    gyroInteg: 0, // 陀螺仪积分角度 (Yaw)
+    startMagHeading: 0,
+    lastTime: 0
+};
 
-    // Y 应该动起来
-    if (pctY > 30) barY.classList.replace('bg-danger', 'bg-success');
-    else barY.classList.replace('bg-success', 'bg-danger');
+// 开始检查按钮点击事件
+window.startMagCheck = function () {
+    const btn = document.getElementById('btn-mag-check');
+    if (isCheckingMag) {
+        // 停止并结算
+        finishMagCheck();
+        return;
+    }
+
+    // 初始化状态
+    isCheckingMag = true;
+    magCheckData.gyroInteg = 0;
+    magCheckData.lastTime = Date.now();
+    magCheckData.startMagHeading = null; // 等待第一帧数据
+
+    // 更新按钮状态
+    btn.innerHTML = '<i class="fas fa-stop me-2"></i>停止并分析';
+    btn.classList.replace('btn-outline-dark', 'btn-danger');
+
+    // 更新提示信息
+    document.getElementById('mag-check-result').innerHTML = "正在重置...";
+    document.getElementById('mag-orient-status').className = "badge bg-warning text-dark";
+    document.getElementById('mag-orient-status').innerText = "检测中";
+
+    // 重置进度条到中间 (0)
+    updateMagCheckUI(0, 0);
+
+    // 稍后提示操作
+    setTimeout(() => {
+        if (isCheckingMag) document.getElementById('mag-check-result').innerText = "请水平左右晃动机身...";
+    }, 500);
+};
+
+// 结束检查并输出结论
+function finishMagCheck() {
+    isCheckingMag = false;
+    const btn = document.getElementById('btn-mag-check');
+    btn.innerHTML = '<i class="fas fa-sync me-2"></i>重新检查';
+    btn.classList.replace('btn-danger', 'btn-outline-dark');
+
+    // 最终判定逻辑
+    const resultBox = document.getElementById('mag-check-result');
+
+    // 根据最后的状态文字来决定弹窗内容
+    if (resultBox.innerHTML.includes("方向一致")) {
+        alert("✅ 检测通过！\n\n磁力计旋转方向与 IMU 一致。\n您可以放心进行 8 卦限校准。");
+    } else if (resultBox.innerHTML.includes("方向相反")) {
+        alert("❌ 检测失败：方向相反！\n\n磁力计的 Y 轴可能反了，或者安装面倒置。\n请检查 'Board Rotation' 或 'Mag Rotation' 参数。");
+    } else if (resultBox.innerHTML.includes("不足")) {
+        alert("⚠️ 数据不足\n\n旋转幅度太小，请至少左右转动 30 度以上。");
+    } else {
+        alert("⚠️ 检测存疑：轴向不匹配！\n\n可能是 90 度偏差。\n请尝试修改磁力计方向参数。");
+    }
+}
+
+// 核心处理函数 (在 handleDataPacket 中调用)
+function processMagCheck(imu, mag) {
+    if (!isCheckingMag) return;
+
+    const now = Date.now();
+    const dt = (now - magCheckData.lastTime) / 1000;
+    magCheckData.lastTime = now;
+
+    if (dt > 1.0) return; // 丢包或卡顿太大，忽略此帧积分
+
+    // 1. 陀螺仪积分 (Yaw)
+    // imu.gz 单位是 rad/s，积分得到角度变化
+    // 假设 imu.gz 已经是校准过方向的 Body Frame 数据 (FRD: Z向下，右转为正)
+    magCheckData.gyroInteg += (imu.gz * 180 / Math.PI) * dt;
+
+    // 2. 磁力计航向计算 (简单的 atan2，假设水平)
+    // 如果固件传上来的是经过 SENS_BOARD_ROT 变换后的 Body Frame Mag，那直接算 atan2(y, x)
+    // 注意: atan2(y, x) 是标准的数学定义，但在导航中 Heading 通常定义为 atan2(y, x) 或 atan2(-y, x) 取决于坐标系
+    // 这里我们只关心相对变化，公式本身不影响旋转的"方向性"判断，只要前后一致即可
+    const magHeading = Math.atan2(mag.y, mag.x) * 180 / Math.PI;
+
+    if (magCheckData.startMagHeading === null) {
+        magCheckData.startMagHeading = magHeading;
+    }
+
+    // 计算磁力计的累积角度变化 (处理 -180/180 跳变)
+    let magDelta = magHeading - magCheckData.startMagHeading;
+    // 处理过零点问题 (比如从 179 跳到 -179，实际变了 +2度，直接减是 -358)
+    if (magDelta > 180) magDelta -= 360;
+    if (magDelta < -180) magDelta += 360;
+
+    // 3. 更新双向进度条 UI
+    updateMagCheckUI(magCheckData.gyroInteg, magDelta);
+
+    // 4. 实时判定与反馈
+    const resDiv = document.getElementById('mag-check-result');
+    const statusBadge = document.getElementById('mag-orient-status');
+
+    // 阈值判断 (如果转动超过 15度才开始评判，避免噪音)
+    if (Math.abs(magCheckData.gyroInteg) > 15) {
+        // 同号 (乘积>0) 且 误差小于 30度
+        // 这里放宽误差是因为未校准的磁力计可能有软磁干扰，导致椭圆失真，角度不线性
+        if (magCheckData.gyroInteg * magDelta > 0 && Math.abs(magCheckData.gyroInteg - magDelta) < 45) {
+            resDiv.innerHTML = '<span class="text-success fw-bold"><i class="fas fa-check-circle"></i> 方向一致</span>';
+            statusBadge.className = "badge bg-success";
+            statusBadge.innerText = "正常";
+        }
+        // 异号 (乘积<0) -> 反向
+        else if (magCheckData.gyroInteg * magDelta < 0) {
+            resDiv.innerHTML = '<span class="text-danger fw-bold"><i class="fas fa-times-circle"></i> 方向相反！</span><br><small>磁力计需翻转/修正</small>';
+            statusBadge.className = "badge bg-danger";
+            statusBadge.innerText = "异常";
+        }
+        // 其他情况 (如同号但误差极大) -> 轴向错误 (比如转了90度)
+        else {
+            resDiv.innerHTML = '<span class="text-warning fw-bold"><i class="fas fa-exclamation-triangle"></i> 轴向不匹配</span><br><small>可能是90度偏差</small>';
+            statusBadge.className = "badge bg-warning text-dark";
+            statusBadge.innerText = "异常";
+        }
+    } else {
+        resDiv.innerHTML = '正在采集... 请继续旋转';
+    }
+}
+
+// 辅助 UI 更新函数 (适配新的双向进度条)
+function updateMagCheckUI(gyroVal, magVal) {
+    // 映射范围：+/- 90 度满格
+    const MAX_ANG = 90;
+
+    const setBar = (type, val) => {
+        // 限制在 -90 ~ 90
+        let v = Math.max(-MAX_ANG, Math.min(MAX_ANG, val));
+        // 转为百分比
+        let pct = (Math.abs(v) / MAX_ANG) * 100;
+
+        const elNeg = document.getElementById(`bar-chk-${type}-neg`);
+        const elPos = document.getElementById(`bar-chk-${type}-pos`);
+
+        if (v < 0) {
+            elNeg.style.width = pct + '%';
+            elPos.style.width = '0%';
+        } else {
+            elNeg.style.width = '0%';
+            elPos.style.width = pct + '%';
+        }
+    };
+
+    setBar('gyro', gyroVal);
+    setBar('mag', magVal);
 }

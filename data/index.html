@@ -250,6 +250,67 @@
                         </ul>
 
                         <div id="tab-content-mag" class="calib-content">
+                            <div class="card border-info mb-4">
+                                <div
+                                    class="card-header bg-info text-dark d-flex justify-content-between align-items-center">
+                                    <span><i class="fas fa-compass me-2"></i>磁力计方向检查 (Mag Orientation Check)</span>
+                                    <span class="badge bg-light text-dark" id="mag-orient-status">未检测</span>
+                                </div>
+                                <div class="card-body">
+                                    <div class="row align-items-center">
+                                        <div class="col-md-8">
+                                            <p class="card-text small text-muted mb-2">
+                                                <strong>原理：</strong> 比较陀螺仪（IMU）与磁力计的旋转是否一致。<br>
+                                                <strong>动作：</strong> 点击开始，拿起机器人，在<strong>水平方向</strong>左右旋转约 45~90 度。
+                                            </p>
+                                            <div class="d-flex align-items-center mb-2">
+                                                <div style="width: 80px;" class="small fw-bold text-end me-2">Gyro Z:
+                                                </div>
+                                                <div class="flex-grow-1">
+                                                    <div class="bi-bar-container">
+                                                        <div class="bi-bar-center-line"></div>
+                                                        <div class="bi-bar-left">
+                                                            <div id="bar-chk-gyro-neg"
+                                                                class="bi-bar-left-inner bg-primary"></div>
+                                                        </div>
+                                                        <div class="bi-bar-right">
+                                                            <div id="bar-chk-gyro-pos"
+                                                                class="bi-bar-right-inner bg-primary"></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="d-flex align-items-center">
+                                                <div style="width: 80px;" class="small fw-bold text-end me-2">Mag Yaw:
+                                                </div>
+                                                <div class="flex-grow-1">
+                                                    <div class="bi-bar-container">
+                                                        <div class="bi-bar-center-line"></div>
+                                                        <div class="bi-bar-left">
+                                                            <div id="bar-chk-mag-neg"
+                                                                class="bi-bar-left-inner bg-danger"></div>
+                                                        </div>
+                                                        <div class="bi-bar-right">
+                                                            <div id="bar-chk-mag-pos"
+                                                                class="bi-bar-right-inner bg-danger"></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="text-center small text-muted mt-1">
+                                                请向左/向右水平旋转，观察两条线是否<strong>同向移动</strong></div>
+                                        </div>
+                                        <div class="col-md-4 text-center border-start">
+                                            <button id="btn-mag-check" class="btn btn-outline-dark w-100 mb-2"
+                                                onclick="startMagCheck()">
+                                                <i class="fas fa-sync me-2"></i>开始检查
+                                            </button>
+                                            <div id="mag-check-result" class="small fw-bold text-muted">等待开始...</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div class="row mb-3">
                                 <div class="col-md-8">
                                     <div class="alert alert-primary d-flex align-items-center" role="alert">
@@ -471,29 +532,47 @@
                                 </button>
                                 <div class="collapse mt-2" id="shakeTestBox">
                                     <div class="card card-body bg-light">
-                                        <h6 class="mb-3"><i class="fas fa-wave-square me-2"></i>轴向响应验证</h6>
-                                        <p class="small text-muted mb-2">
-                                            动作：请抓取飞机做 <strong>抬头/低头 (Pitch)</strong> 动作。<br>
-                                            观察：<span class="text-danger fw-bold">Pitch (Y)</span> 进度条应大幅跳动，其他轴应保持静止。
-                                        </p>
+                                        <h6 class="mb-2"><i class="fas fa-wave-square me-2"></i>轴向与极性验证</h6>
+
+                                        <div class="alert alert-warning small py-2 mb-3">
+                                            <strong>FRD 坐标系验证指南：</strong>
+                                            <ul class="mb-0 ps-3">
+                                                <li><strong>Roll (X):</strong> 右倾 (右翼下) &rarr; <span
+                                                        class="text-success fw-bold">正 (绿/右)</span></li>
+                                                <li><strong>Pitch (Y):</strong> 抬头 (机头起) &rarr; <span
+                                                        class="text-success fw-bold">正 (绿/右)</span></li>
+                                                <li><strong>Yaw (Z):</strong> 右转 (机头右) &rarr; <span
+                                                        class="text-success fw-bold">正 (绿/右)</span></li>
+                                            </ul>
+                                        </div>
 
                                         <div class="row g-2 align-items-center mb-1">
                                             <div class="col-3 text-end small font-monospace">Roll (X)</div>
                                             <div class="col-9">
-                                                <div class="progress" style="height: 10px;">
-                                                    <div id="bar-shake-x" class="progress-bar bg-secondary"
-                                                        role="progressbar" style="width: 0%"></div>
+                                                <div class="bi-bar-container">
+                                                    <div class="bi-bar-center-line"></div>
+                                                    <div class="bi-bar-left">
+                                                        <div id="bar-shake-x-neg" class="bi-bar-left-inner"></div>
+                                                    </div>
+                                                    <div class="bi-bar-right">
+                                                        <div id="bar-shake-x-pos" class="bi-bar-right-inner"></div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
 
                                         <div class="row g-2 align-items-center mb-1">
-                                            <div class="col-3 text-end small font-monospace fw-bold text-danger">Pitch
+                                            <div class="col-3 text-end small font-monospace fw-bold text-primary">Pitch
                                                 (Y)</div>
                                             <div class="col-9">
-                                                <div class="progress" style="height: 15px;">
-                                                    <div id="bar-shake-y" class="progress-bar bg-danger"
-                                                        role="progressbar" style="width: 0%"></div>
+                                                <div class="bi-bar-container border border-primary">
+                                                    <div class="bi-bar-center-line"></div>
+                                                    <div class="bi-bar-left">
+                                                        <div id="bar-shake-y-neg" class="bi-bar-left-inner"></div>
+                                                    </div>
+                                                    <div class="bi-bar-right">
+                                                        <div id="bar-shake-y-pos" class="bi-bar-right-inner"></div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
@@ -501,12 +580,19 @@
                                         <div class="row g-2 align-items-center">
                                             <div class="col-3 text-end small font-monospace">Yaw (Z)</div>
                                             <div class="col-9">
-                                                <div class="progress" style="height: 10px;">
-                                                    <div id="bar-shake-z" class="progress-bar bg-secondary"
-                                                        role="progressbar" style="width: 0%"></div>
+                                                <div class="bi-bar-container">
+                                                    <div class="bi-bar-center-line"></div>
+                                                    <div class="bi-bar-left">
+                                                        <div id="bar-shake-z-neg" class="bi-bar-left-inner"></div>
+                                                    </div>
+                                                    <div class="bi-bar-right">
+                                                        <div id="bar-shake-z-pos" class="bi-bar-right-inner"></div>
+                                                    </div>
                                                 </div>
                                             </div>
                                         </div>
+                                        <div class="text-center small text-muted mt-2">← 负值 (Left/Down) | 正值 (Right/Up)
+                                            →</div>
                                     </div>
                                 </div>
                             </div>
