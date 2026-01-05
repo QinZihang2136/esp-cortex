@@ -23,47 +23,82 @@
             color: #555;
         }
 
-        /* 选中或完成时的样式 */
         .btn-success .calib-icon {
             color: white;
         }
 
-        /* 定义飞机的姿态旋转 */
         .pose-level {
             transform: rotate(0deg);
         }
 
-        /* 平放 */
         .pose-nose-up {
             transform: rotate(0deg) scale(1.2);
         }
 
-        /* 机头朝天 */
         .pose-nose-dn {
             transform: rotate(180deg);
         }
 
-        /* 机头朝地 */
         .pose-left {
             transform: rotate(-90deg);
         }
 
-        /* 左侧卧 */
         .pose-right {
             transform: rotate(90deg);
         }
 
-        /* 右侧卧 */
         .pose-invert {
             transform: scaleY(-1);
             opacity: 0.6;
         }
 
-        /* 倒扣 */
-
-        /* 简单的旋转过渡效果 */
         .transition-transform {
             transition: transform 0.5s ease-in-out;
+        }
+
+        /* === 新增：双向进度条样式 === */
+        .bi-bar-container {
+            height: 16px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+        }
+
+        .bi-bar-center-line {
+            position: absolute;
+            left: 50%;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background-color: #6c757d;
+            z-index: 5;
+            transform: translateX(-50%);
+        }
+
+        .bi-bar-left {
+            width: 50%;
+            display: flex;
+            justify-content: flex-end;
+        }
+
+        .bi-bar-left-inner {
+            height: 100%;
+            width: 0%;
+            transition: width 0.1s linear;
+        }
+
+        .bi-bar-right {
+            width: 50%;
+            display: flex;
+            justify-content: flex-start;
+        }
+
+        .bi-bar-right-inner {
+            height: 100%;
+            width: 0%;
+            transition: width 0.1s linear;
         }
     </style>
 </head>
@@ -117,23 +152,16 @@
                                 class="p-3 bg-white shadow-sm d-flex justify-content-between align-items-center rounded">
                                 <div>
                                     <p class="mb-1 text-muted fw-bold">系统状态 (System)</p>
-                                    <div class="mb-1">
-                                        <i class="fas fa-battery-half text-success me-1"></i>
-                                        <span id="val-bat" class="fw-bold">0.0 V</span>
-                                    </div>
-                                    <div class="mb-1">
-                                        <i class="fas fa-memory text-primary me-1"></i>
-                                        Heap: <span id="val-heap">0.0</span> KB
-                                    </div>
-                                    <div class="small text-muted">
-                                        <i class="fas fa-clock me-1"></i>
-                                        <span id="val-uptime">00:00:00</span>
-                                    </div>
+                                    <div class="mb-1"><i class="fas fa-battery-half text-success me-1"></i><span
+                                            id="val-bat" class="fw-bold">0.0 V</span></div>
+                                    <div class="mb-1"><i class="fas fa-memory text-primary me-1"></i>Heap: <span
+                                            id="val-heap">0.0</span> KB</div>
+                                    <div class="small text-muted"><i class="fas fa-clock me-1"></i><span
+                                            id="val-uptime">00:00:00</span></div>
                                 </div>
                                 <i class="fas fa-microchip fs-1 text-secondary opacity-25"></i>
                             </div>
                         </div>
-
                         <div class="col-md-3">
                             <div
                                 class="p-3 bg-white shadow-sm d-flex justify-content-between align-items-center rounded">
@@ -172,7 +200,6 @@
                                 autocomplete="off" checked onclick="switchDashView('chart')">
                             <label class="btn btn-outline-primary px-4" for="btn-check-chart"><i
                                     class="fas fa-chart-line me-2"></i>实时波形</label>
-
                             <input type="radio" class="btn-check" name="dashView" id="btn-check-3d" autocomplete="off"
                                 onclick="switchDashView('3d')">
                             <label class="btn btn-outline-primary px-4" for="btn-check-3d"><i
@@ -185,7 +212,6 @@
                             <div id="dash-content-chart" class="bg-white p-4 rounded shadow-sm" style="height: 500px;">
                                 <canvas id="mainChart"></canvas>
                             </div>
-
                             <div id="dash-content-3d" class="bg-white p-0 rounded shadow-sm overflow-hidden"
                                 style="height: 500px; display: none; position: relative;">
                                 <div id="three-container" style="width: 100%; height: 100%;"></div>
@@ -202,9 +228,8 @@
                     <div class="bg-white p-4 rounded shadow-sm">
                         <div class="d-flex justify-content-between mb-3 align-items-center">
                             <div>
-                                <button class="btn btn-primary me-2" onclick="requestAllParams()">
-                                    <i class="fas fa-sync me-2"></i>刷新参数列表
-                                </button>
+                                <button class="btn btn-primary me-2" onclick="requestAllParams()"><i
+                                        class="fas fa-sync me-2"></i>刷新参数列表</button>
                                 <span class="text-muted small" id="param-count-label">共 0 个参数</span>
                             </div>
                             <div class="input-group w-25">
@@ -242,14 +267,13 @@
                                     onclick="switchCalibTab('mag')">磁力计 (Mag)</button></li>
                             <li class="nav-item"><button class="nav-link" id="tab-btn-imu"
                                     onclick="switchCalibTab('imu')">加速度计 (IMU)</button></li>
-                            <li class="nav-item">
-                                <button class="nav-link" id="tab-btn-orient" onclick="switchCalibTab('orient')">
-                                    <i class="fas fa-sync-alt me-2"></i>安装方向 (Orientation)
-                                </button>
-                            </li>
+                            <li class="nav-item"><button class="nav-link" id="tab-btn-orient"
+                                    onclick="switchCalibTab('orient')"><i class="fas fa-sync-alt me-2"></i>安装方向
+                                    (Orientation)</button></li>
                         </ul>
 
                         <div id="tab-content-mag" class="calib-content">
+
                             <div class="card border-info mb-4">
                                 <div
                                     class="card-header bg-info text-dark d-flex justify-content-between align-items-center">
@@ -307,6 +331,55 @@
                                             </button>
                                             <div id="mag-check-result" class="small fw-bold text-muted">等待开始...</div>
                                         </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="card border-primary mb-4">
+                                <div class="card-header bg-primary text-white">
+                                    <i class="fas fa-magic me-2"></i>分步方向推断 (Guided Setup)
+                                </div>
+                                <div class="card-body">
+                                    <p class="small text-muted mb-3">
+                                        相比画8字，分步检测更抗干扰。请跟随指引，分别转动飞机的不同轴向。
+                                    </p>
+
+                                    <div class="row align-items-center mb-3">
+                                        <div class="col-md-8">
+                                            <h6 class="fw-bold text-primary">步骤 1: 俯仰检测 (Pitch)</h6>
+                                            <p class="small mb-1">动作：请大幅度<strong>抬头/低头</strong> (绕机身横轴旋转)。</p>
+                                            <div class="progress" style="height: 15px;">
+                                                <div id="prog-step-pitch" class="progress-bar bg-secondary"
+                                                    style="width: 0%">等待开始</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4 text-end">
+                                            <button id="btn-step-pitch" class="btn btn-outline-primary w-100"
+                                                onclick="startAxisDetect('pitch')">
+                                                <i class="fas fa-play me-1"></i>开始采集
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div class="row align-items-center mb-3">
+                                        <div class="col-md-8">
+                                            <h6 class="fw-bold text-success">步骤 2: 横滚检测 (Roll)</h6>
+                                            <p class="small mb-1">动作：请大幅度<strong>左右摇摆</strong> (绕机身纵轴旋转)。</p>
+                                            <div class="progress" style="height: 15px;">
+                                                <div id="prog-step-roll" class="progress-bar bg-secondary"
+                                                    style="width: 0%">需完成步骤1</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-4 text-end">
+                                            <button id="btn-step-roll" class="btn btn-outline-success w-100" disabled
+                                                onclick="startAxisDetect('roll')">
+                                                <i class="fas fa-play me-1"></i>开始采集
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div id="axis-detect-result" class="alert alert-light border text-center"
+                                        style="display:none;">
                                     </div>
                                 </div>
                             </div>
@@ -404,11 +477,9 @@
                                     <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
                                         id="btn-side-z-down" onclick="captureImuSide('z_down')">
                                         <i class="fas fa-fighter-jet calib-icon pose-level"></i><br>
-                                        <strong>Level (平放)</strong><br>
-                                        <span class="small text-muted">机腹贴地</span>
+                                        <strong>Level (平放)</strong><br><span class="small text-muted">机腹贴地</span>
                                     </button>
                                 </div>
-
                                 <div class="col-md-4">
                                     <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn" id="btn-side-z-up"
                                         onclick="captureImuSide('z_up')">
@@ -417,52 +488,42 @@
                                             <i
                                                 class="fas fa-sync position-absolute top-50 start-50 translate-middle text-dark"></i>
                                         </div><br>
-                                        <strong>Inverted (倒扣)</strong><br>
-                                        <span class="small text-muted">机背贴地</span>
+                                        <strong>Inverted (倒扣)</strong><br><span class="small text-muted">机背贴地</span>
                                     </button>
                                 </div>
-
                                 <div class="col-md-4">
                                     <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn" id="btn-side-x-up"
                                         onclick="captureImuSide('x_up')">
                                         <i class="fas fa-fighter-jet calib-icon"
                                             style="transform: rotate(-90deg);"></i><br>
-                                        <strong>Nose Up (机头朝天)</strong><br>
-                                        <span class="small text-muted">机尾贴地</span>
+                                        <strong>Nose Up (机头朝天)</strong><br><span class="small text-muted">机尾贴地</span>
                                     </button>
                                 </div>
-
                                 <div class="col-md-4">
                                     <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
                                         id="btn-side-x-down" onclick="captureImuSide('x_down')">
                                         <i class="fas fa-fighter-jet calib-icon"
                                             style="transform: rotate(90deg);"></i><br>
-                                        <strong>Nose Down (机头朝地)</strong><br>
-                                        <span class="small text-muted">机头贴地</span>
+                                        <strong>Nose Down (机头朝地)</strong><br><span class="small text-muted">机头贴地</span>
                                     </button>
                                 </div>
-
                                 <div class="col-md-4">
                                     <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn" id="btn-side-y-up"
                                         onclick="captureImuSide('y_up')">
                                         <i class="fas fa-fighter-jet calib-icon"
                                             style="transform: rotate(-45deg);"></i><br>
-                                        <strong>Left Side (左侧卧)</strong><br>
-                                        <span class="small text-muted">左翼贴地</span>
+                                        <strong>Left Side (左侧卧)</strong><br><span class="small text-muted">左翼贴地</span>
                                     </button>
                                 </div>
-
                                 <div class="col-md-4">
                                     <button class="btn btn-outline-secondary w-100 py-3 imu-side-btn"
                                         id="btn-side-y-down" onclick="captureImuSide('y_down')">
                                         <i class="fas fa-fighter-jet calib-icon"
                                             style="transform: rotate(45deg);"></i><br>
-                                        <strong>Right Side (右侧卧)</strong><br>
-                                        <span class="small text-muted">右翼贴地</span>
+                                        <strong>Right Side (右侧卧)</strong><br><span class="small text-muted">右翼贴地</span>
                                     </button>
                                 </div>
                             </div>
-
                             <div class="d-grid"><button id="btn-imu-calc" class="btn btn-secondary btn-lg" disabled
                                     onclick="finishImuCalibration()">计算并保存</button></div>
                         </div>
@@ -490,13 +551,10 @@
                                                 <i class="fas fa-camera me-2"></i>采集数据
                                             </button>
                                             <div id="res-orient-level" class="mt-2 text-success small fw-bold"
-                                                style="display:none;">
-                                                <i class="fas fa-check me-1"></i>已采集
-                                            </div>
+                                                style="display:none;"><i class="fas fa-check me-1"></i>已采集</div>
                                         </div>
                                     </div>
                                 </div>
-
                                 <div class="col-md-6">
                                     <div class="card h-100 border-info">
                                         <div class="card-header bg-info text-dark">步骤 2: 抬头 (Nose Up)</div>
@@ -510,9 +568,7 @@
                                                 <i class="fas fa-camera me-2"></i>采集数据
                                             </button>
                                             <div id="res-orient-up" class="mt-2 text-success small fw-bold"
-                                                style="display:none;">
-                                                <i class="fas fa-check me-1"></i>已采集
-                                            </div>
+                                                style="display:none;"><i class="fas fa-check me-1"></i>已采集</div>
                                         </div>
                                     </div>
                                 </div>

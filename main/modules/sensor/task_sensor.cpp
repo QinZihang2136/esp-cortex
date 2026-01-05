@@ -206,7 +206,6 @@ static void task_sensor_entry(void* arg)
             float ax_raw, ay_raw, az_raw, gx_raw, gy_raw, gz_raw;
             imu.getAccel(&ax_raw, &ay_raw, &az_raw);
             imu.getGyro(&gx_raw, &gy_raw, &gz_raw);
-
             // =========================================================
             // [坐标系映射] SENSOR (Y前, X右, Z上) -> BODY FRD (X前, Y右, Z下)
             // =========================================================
@@ -257,6 +256,7 @@ static void task_sensor_entry(void* arg)
                     mag_data.x = (mag_body_x - mag_offset_x) * mag_scale_x;
                     mag_data.y = (mag_body_y - mag_offset_y) * mag_scale_y;
                     mag_data.z = (mag_body_z - mag_offset_z) * mag_scale_z;
+                    mag_data.timestamp_us = esp_timer_get_time();
 
                     bus.mag.publish(mag_data);
                 }

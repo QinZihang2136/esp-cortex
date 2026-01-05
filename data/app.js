@@ -180,6 +180,11 @@ function handleDataPacket(jsonObj) {
             if (isCapturingMag) {
                 updateMagCalibrationLogic(payload.mag);
             }
+
+            // [New] 分步方向检测采集 (仅使用 Mag 数据)
+            if (isAxisDetecting) {
+                collectAxisData(payload.mag);
+            }
         }
 
         // --- IMU (Accel/Gyro) 数据处理 ---
@@ -195,7 +200,7 @@ function handleDataPacket(jsonObj) {
                 imuCalibData.sides[currentCalibSide].push({ x: payload.imu.ax, y: payload.imu.ay, z: payload.imu.az });
             }
 
-            // --- 方向自动检测采集逻辑 ---
+            // --- 方向自动检测采集逻辑 (IMU部分) ---
             if (isCapturingOrient && targetOrientStep) {
                 // 采集 50 个点 (约 0.5~1秒)
                 if (orientRawBuffer.length < 50) {
@@ -225,7 +230,6 @@ function handleDataPacket(jsonObj) {
         logToTerminal("[ESP] " + payload.msg);
     }
 }
-
 // ================= 4. 图表功能 (Chart.js) =================
 let mainChart = null;
 function initChart() {
@@ -1268,4 +1272,197 @@ function updateMagCheckUI(gyroVal, magVal) {
 
     setBar('gyro', gyroVal);
     setBar('mag', magVal);
+}
+// ================= 13. 磁力计全自动方向推断 (Motion Matching) =================
+// ================= 13. 分步轴向推断 (Axis Correlation Method) =================
+
+let isAxisDetecting = false;
+let currentDetectAxis = null; // 'pitch' or 'roll'
+let axisSamples = { pitch: null, roll: null };
+let axisBuffer = []; // 存储磁力计原始向量
+let axisDetectStartTime = 0;
+const AXIS_DETECT_DURATION = 5000; // 5秒足够了
+
+window.startAxisDetect = function (axis) {
+    if (isAxisDetecting) return;
+
+    isAxisDetecting = true;
+    currentDetectAxis = axis;
+    axisBuffer = []; // 清空缓存
+    axisDetectStartTime = Date.now();
+
+    // UI 更新
+    const btn = document.getElementById(`btn-step-${axis}`);
+    btn.innerHTML = '<div class="spinner-border spinner-border-sm"></div> 晃动中...';
+    btn.disabled = true;
+
+    const bar = document.getElementById(`prog-step-${axis}`);
+    bar.classList.add('progress-bar-striped', 'progress-bar-animated');
+    bar.classList.replace('bg-secondary', axis === 'pitch' ? 'bg-primary' : 'bg-success');
+
+    updateAxisProgress();
+};
+
+function updateAxisProgress() {
+    if (!isAxisDetecting) return;
+
+    const elapsed = Date.now() - axisDetectStartTime;
+    const pct = Math.min(100, (elapsed / AXIS_DETECT_DURATION) * 100);
+    const bar = document.getElementById(`prog-step-${currentDetectAxis}`);
+    bar.style.width = pct + '%';
+
+    if (elapsed < AXIS_DETECT_DURATION) {
+        requestAnimationFrame(updateAxisProgress);
+    } else {
+        finishAxisDetect();
+    }
+}
+
+// 在 handleDataPacket 中调用
+function collectAxisData(mag) {
+    if (!isAxisDetecting) return;
+
+    // 只记录 Mag 向量，不需要 Gyro，也不需要时间戳，越简单越稳
+    // 只有当数据变化足够大时才记录，防止静止噪声
+    if (axisBuffer.length > 0) {
+        const last = axisBuffer[axisBuffer.length - 1];
+        const dist = Math.abs(mag.x - last.x) + Math.abs(mag.y - last.y) + Math.abs(mag.z - last.z);
+        if (dist < 2.0) return; // 忽略微小抖动
+    }
+
+    axisBuffer.push(new THREE.Vector3(mag.x, mag.y, mag.z));
+}
+
+function finishAxisDetect() {
+    isAxisDetecting = false;
+    const axis = currentDetectAxis;
+
+    // UI 恢复
+    const btn = document.getElementById(`btn-step-${axis}`);
+    btn.innerHTML = '<i class="fas fa-check"></i> 完成';
+    const bar = document.getElementById(`prog-step-${axis}`);
+    bar.classList.remove('progress-bar-striped', 'progress-bar-animated');
+    bar.innerText = "采集完成";
+
+    // --- 核心算法：计算旋转平面的法向量 ---
+    // 原理：当绕某个轴旋转时，Mag向量的变化轨迹位于垂直于该轴的平面上。
+    // 计算方法：累加相邻点的叉乘 (Cross Product)。
+    // V_rotation_axis = Sum( V[i] x V[i+1] )
+
+    let rotationAxisSum = new THREE.Vector3(0, 0, 0);
+    let validPairs = 0;
+
+    for (let i = 1; i < axisBuffer.length; i++) {
+        const v1 = axisBuffer[i - 1];
+        const v2 = axisBuffer[i];
+
+        // 叉乘得到法向量 (即旋转轴在 Sensor 坐标系下的方向)
+        const cross = new THREE.Vector3().crossVectors(v1, v2);
+
+        // 只有当旋转幅度够大时，叉乘结果才可靠
+        if (cross.length() > 5.0) {
+            // 统一方向：我们要判断它是正转还是反转有点难，
+            // 但我们主要关心它在哪个轴上分量最大。
+            // 为了防止正反转抵消，我们这里取绝对值累加其实是不行的，因为方向是有意义的。
+            // 但考虑到用户可能来回晃，来回晃的时候，v1xv2 方向会反向。
+            // 改进：我们利用 Gyro 数据辅助判断方向太复杂，
+            // 简单点：我们只求 "主轴 (Principal Axis)"。
+            // 我们对 cross 的每个分量取绝对值后再累加，判断哪个轴最活跃。
+
+            rotationAxisSum.x += Math.abs(cross.x);
+            rotationAxisSum.y += Math.abs(cross.y);
+            rotationAxisSum.z += Math.abs(cross.z);
+            validPairs++;
+        }
+    }
+
+    if (validPairs < 10) {
+        alert("动作幅度太小，请重试！\n请大幅度晃动。");
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-play"></i> 重试';
+        return;
+    }
+
+    // 归一化，看哪个轴分量最大
+    rotationAxisSum.normalize();
+    axisSamples[axis] = rotationAxisSum;
+
+    console.log(`Axis [${axis}] detected vector:`, rotationAxisSum);
+
+    // 逻辑流转
+    if (axis === 'pitch') {
+        // 开启 Roll 按钮
+        document.getElementById('btn-step-roll').disabled = false;
+        document.getElementById('prog-step-roll').innerText = "请点击开始";
+    } else if (axis === 'roll') {
+        calculateFinalOrientation();
+    }
+}
+
+function calculateFinalOrientation() {
+    if (!axisSamples.pitch || !axisSamples.roll) return;
+
+    const resDiv = document.getElementById('axis-detect-result');
+    resDiv.style.display = 'block';
+
+    // --- 最终推断 ---
+    // 理论上：
+    // Pitch 动作 (绕机体 Y 转) -> 应该检测到 Sensor 的某个轴分量最大
+    // Roll 动作 (绕机体 X 转) -> 应该检测到 Sensor 的另一个轴分量最大
+
+    const pitchVec = axisSamples.pitch; // 对应 Body Y
+    const rollVec = axisSamples.roll;  // 对应 Body X
+
+    // 寻找最佳匹配的旋转矩阵
+    // 我们遍历 24 种 Rotation，看哪一种把 Sensor 坐标系转动后，
+    // 能让 Sensor_Pitch_Axis 对应 Body Y (0,1,0)
+    // 且 Sensor_Roll_Axis  对应 Body X (1,0,0)
+
+    let bestRotId = -1;
+    let maxScore = -Infinity;
+
+    ROTATION_LIST.forEach(rot => {
+        const d2r = Math.PI / 180;
+        const euler = new THREE.Euler(rot.roll * d2r, rot.pitch * d2r, rot.yaw * d2r, 'ZYX');
+        const q = new THREE.Quaternion().setFromEuler(euler);
+
+        // 将 Body 的 X(Roll) 和 Y(Pitch) 轴逆向转到 Sensor 系，看看和测量值是否重合？
+        // 或者：将测量的 Sensor 轴正向转到 Body 系，看看是否对齐？ -> 这个更直观
+
+        // 测量的 Roll 轴 (Sensor Frame) -> 转到 Body Frame
+        const rollInBody = rollVec.clone().applyQuaternion(q);
+        // 测量的 Pitch 轴 (Sensor Frame) -> 转到 Body Frame
+        const pitchInBody = pitchVec.clone().applyQuaternion(q);
+
+        // 评分：点积 (投影)。绝对值越大说明越平行。
+        // 我们期望 rollInBody 接近 (1, 0, 0)
+        // 我们期望 pitchInBody 接近 (0, 1, 0)
+        // 此时我们不关心正负号（因为用户可能反着摇），只关心轴对不对
+        const score = Math.abs(rollInBody.x) + Math.abs(pitchInBody.y);
+
+        if (score > maxScore) {
+            maxScore = score;
+            bestRotId = rot.id;
+        }
+    });
+
+    const match = ROTATION_LIST.find(r => r.id === bestRotId);
+
+    // 显示结果
+    if (maxScore > 1.5) { // 满分是 2.0
+        resDiv.innerHTML = `
+            <h5 class="text-success"><i class="fas fa-check-circle"></i> 识别成功</h5>
+            <div class="fs-4 fw-bold mb-2">${match.name}</div>
+            <div class="text-muted small mb-3">置信度: ${(maxScore / 2 * 100).toFixed(0)}% (ID: ${bestRotId})</div>
+            <button class="btn btn-success" onclick="applyMagAutoParam(${bestRotId}, '${match.name}')">
+                应用并保存
+            </button>
+        `;
+    } else {
+        resDiv.innerHTML = `
+            <h5 class="text-danger"><i class="fas fa-times-circle"></i> 识别失败</h5>
+            <p class="mb-0">数据特征不明显 (得分 ${maxScore.toFixed(2)})。<br>可能是晃动幅度不够，或只晃动了一个轴。</p>
+            <button class="btn btn-outline-dark btn-sm mt-2" onclick="location.reload()">重新开始</button>
+        `;
+    }
 }
