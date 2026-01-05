@@ -32,7 +32,43 @@ let imuSidesStatus = { z_up: false, z_down: false, x_up: false, x_down: false, y
 
 // 当前仪表盘视图模式 ('chart' 或 '3d')
 let currentDashMode = 'chart';
+// === 方向校准专用变量 ===
+let orientSamples = { level: null, noseUp: null }; // 存储采集的平均向量 {x,y,z}
+let orientRawBuffer = []; // 临时缓冲
+let isCapturingOrient = false;
+let targetOrientStep = null; // 'level' or 'noseUp'
 
+// 标准旋转列表 (参考 ArduPilot/PX4 定义)
+// 这里的 index 对应固件里 enum Rotation 的整数值
+const ROTATION_LIST = [
+    { id: 0, name: "None (默认)", roll: 0, pitch: 0, yaw: 0 },
+    { id: 1, name: "Yaw 45°", roll: 0, pitch: 0, yaw: 45 },
+    { id: 2, name: "Yaw 90°", roll: 0, pitch: 0, yaw: 90 },
+    { id: 3, name: "Yaw 135°", roll: 0, pitch: 0, yaw: 135 },
+    { id: 4, name: "Yaw 180°", roll: 0, pitch: 0, yaw: 180 },
+    { id: 5, name: "Yaw 225°", roll: 0, pitch: 0, yaw: 225 },
+    { id: 6, name: "Yaw 270°", roll: 0, pitch: 0, yaw: 270 },
+    { id: 7, name: "Yaw 315°", roll: 0, pitch: 0, yaw: 315 },
+    { id: 8, name: "Roll 180°", roll: 180, pitch: 0, yaw: 0 },
+    { id: 9, name: "Roll 180°, Yaw 45°", roll: 180, pitch: 0, yaw: 45 },
+    { id: 10, name: "Roll 180°, Yaw 90°", roll: 180, pitch: 0, yaw: 90 },
+    { id: 11, name: "Roll 180°, Yaw 135°", roll: 180, pitch: 0, yaw: 135 },
+    { id: 12, name: "Pitch 180°", roll: 0, pitch: 180, yaw: 0 },
+    { id: 13, name: "Roll 180°, Yaw 225°", roll: 180, pitch: 0, yaw: 225 },
+    { id: 14, name: "Roll 180°, Yaw 270°", roll: 180, pitch: 0, yaw: 270 },
+    { id: 15, name: "Roll 180°, Yaw 315°", roll: 180, pitch: 0, yaw: 315 },
+    { id: 16, name: "Roll 90°", roll: 90, pitch: 0, yaw: 0 },
+    { id: 17, name: "Roll 90°, Yaw 45°", roll: 90, pitch: 0, yaw: 45 },
+    { id: 18, name: "Roll 90°, Yaw 90°", roll: 90, pitch: 0, yaw: 90 },
+    { id: 19, name: "Roll 90°, Yaw 135°", roll: 90, pitch: 0, yaw: 135 },
+    { id: 20, name: "Roll 270°", roll: 270, pitch: 0, yaw: 0 },
+    { id: 21, name: "Roll 270°, Yaw 45°", roll: 270, pitch: 0, yaw: 45 },
+    { id: 22, name: "Roll 270°, Yaw 90°", roll: 270, pitch: 0, yaw: 90 },
+    { id: 23, name: "Roll 270°, Yaw 135°", roll: 270, pitch: 0, yaw: 135 },
+    // 特殊情况：Pitch 90 (Nose Down) 等... 这里仅列举常用组合，完整列表需匹配 C++
+    { id: 24, name: "Pitch 90°", roll: 0, pitch: 90, yaw: 0 },
+    { id: 25, name: "Pitch 270° (Nose Up)", roll: 0, pitch: 270, yaw: 0 }
+];
 // ================= 1. 程序入口 =================
 window.onload = function () {
     logToTerminal("GUI System Booting...");
@@ -152,6 +188,16 @@ function handleDataPacket(jsonObj) {
                 // 保存 {x, y, z} 格式
                 imuCalibData.sides[currentCalibSide].push({ x: payload.imu.ax, y: payload.imu.ay, z: payload.imu.az });
             }
+            // --- 方向校准采集逻辑 ---
+            if (isCapturingOrient && targetOrientStep) {
+                // 采集 50 个点 (约 0.5~1秒)
+                if (orientRawBuffer.length < 50) {
+                    orientRawBuffer.push({ x: payload.imu.ax, y: payload.imu.ay, z: payload.imu.az });
+                } else {
+                    finishOrientStep();
+                }
+            }
+            updateShakeTestUI(payload.imu);
         }
     }
     // 2. 参数列表
@@ -885,4 +931,181 @@ function startSimulationDataLoop() {
             }
         });
     }, 50);
+}
+// ================= 10. 安装方向自动检测逻辑 =================
+
+window.captureOrientStep = function (step) {
+    if (isCapturingOrient) return;
+
+    // UI 更新
+    const btn = document.getElementById(step === 'level' ? 'btn-orient-level' : 'btn-orient-up');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '<div class="spinner-border spinner-border-sm"></div> 采集中...';
+    btn.disabled = true;
+
+    // 重置状态
+    orientRawBuffer = [];
+    targetOrientStep = step;
+    isCapturingOrient = true;
+
+    // 3秒超时保护 (防止 WebSocket 断连卡死)
+    setTimeout(() => {
+        if (isCapturingOrient) {
+            isCapturingOrient = false;
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+            alert("采集超时，请检查连接");
+        }
+    }, 3000);
+};
+
+function finishOrientStep() {
+    isCapturingOrient = false;
+
+    // 计算均值
+    let sum = { x: 0, y: 0, z: 0 };
+    orientRawBuffer.forEach(p => { sum.x += p.x; sum.y += p.y; sum.z += p.z; });
+    const avg = {
+        x: sum.x / orientRawBuffer.length,
+        y: sum.y / orientRawBuffer.length,
+        z: sum.z / orientRawBuffer.length
+    };
+
+    // 保存结果
+    orientSamples[targetOrientStep] = avg;
+
+    // UI 更新
+    const step = targetOrientStep;
+    const btn = document.getElementById(step === 'level' ? 'btn-orient-level' : 'btn-orient-up');
+    btn.innerHTML = '<i class="fas fa-check"></i> 重新采集';
+    btn.disabled = false;
+    btn.classList.replace('btn-outline-primary', 'btn-success');
+    btn.classList.replace('btn-outline-info', 'btn-success');
+
+    document.getElementById(step === 'level' ? 'res-orient-level' : 'res-orient-up').style.display = 'block';
+
+    // 检查是否两个都完成了
+    if (orientSamples.level && orientSamples.noseUp) {
+        const calcBtn = document.getElementById('btn-orient-calc');
+        calcBtn.disabled = false;
+        calcBtn.classList.replace('btn-secondary', 'btn-primary');
+    }
+
+    targetOrientStep = null;
+}
+
+// ================= 修复后的 calcOrientation 函数 =================
+window.calcOrientation = function () {
+    if (!orientSamples.level || !orientSamples.noseUp) return;
+
+    // 1. 定义目标向量 (标准 Body Frame FRD)
+    // Level: Z轴向下 (-1g)，因为加速度计测量的是支持力(向上)，所以在 FRD 里指向 -Z => [0, 0, -1]
+    const target_level = new THREE.Vector3(0, 0, -1);
+    // NoseUp: 机头向上，支持力向上(沿机头方向)，在 FRD 里指向 +X => [1, 0, 0]
+    const target_noseup = new THREE.Vector3(1, 0, 0);
+
+    let bestIdx = -1;
+    let minErr = Infinity;
+
+    // 辅助函数：旋转并归一化向量
+    const getRotatedNormVec = (vRaw, roll, pitch, yaw) => {
+        // A. 先转为 Three.js 向量
+        const vec = new THREE.Vector3(vRaw.x, vRaw.y, vRaw.z);
+
+        // B. 【关键修复】必须归一化！把 9.8 变成 1.0
+        vec.normalize();
+
+        // C. 应用旋转
+        const d2r = Math.PI / 180;
+        const euler = new THREE.Euler(roll * d2r, pitch * d2r, yaw * d2r, 'ZYX');
+        vec.applyEuler(euler);
+
+        return vec;
+    };
+
+    ROTATION_LIST.forEach(rot => {
+        // 2. 将采集到的原始数据，尝试旋转到标准 FRD 坐标系
+        const r_level = getRotatedNormVec(orientSamples.level, rot.roll, rot.pitch, rot.yaw);
+        const r_noseup = getRotatedNormVec(orientSamples.noseUp, rot.roll, rot.pitch, rot.yaw);
+
+        // 3. 计算误差 (向量距离)
+        // 现在的比较是公平的：都是单位向量
+        const err1 = r_level.distanceTo(target_level);
+        const err2 = r_noseup.distanceTo(target_noseup);
+
+        const totalErr = err1 + err2;
+
+        // debug: 打印一下看看误差分布 (可选)
+        // console.log(`Rot ${rot.id} (${rot.name}): Err=${totalErr.toFixed(3)}`);
+
+        if (totalErr < minErr) {
+            minErr = totalErr;
+            bestIdx = rot.id;
+        }
+    });
+
+    // 4. 判定阈值
+    // 归一化后，两个单位向量如果偏差 5度，距离约为 0.08。
+    // 两个动作加起来，误差 < 0.5 是非常宽松的（允许约 15-20 度的总偏差）。
+    // 如果想要更宽松，可以改到 0.8
+    if (bestIdx !== -1 && minErr < 0.6) {
+        const match = ROTATION_LIST.find(r => r.id === bestIdx);
+        const msg = `检测结果：\n\nID: ${bestIdx}\n名称: ${match.name}\n(误差: ${minErr.toFixed(3)})\n\n是否应用此方向设置？\n注意：应用后请重新校准加速度计。`;
+
+        if (confirm(msg)) {
+            sendJson({ cmd: "set_param", key: "SENS_BOARD_ROT", val: bestIdx });
+            alert("参数已发送！请手动重启或在控制台确认生效。");
+
+            // 更新 UI
+            document.getElementById('orient-current-val').innerText = match.name;
+            const icon = document.getElementById('orient-icon-preview');
+            icon.style.transform = `rotate(${match.yaw}deg)`;
+        }
+    } else {
+        alert(`检测失败！未能匹配标准方向 (最小误差: ${minErr.toFixed(2)})\n\n可能原因：\n1. 采集时未保持静止\n2. 摆放姿态偏差过大\n3. 传感器本身有巨大零偏 (请先做一次粗略的 IMU 校准)`);
+    }
+};
+// ================= 11. 摇晃验证 UI 驱动 =================
+
+function updateShakeTestUI(imu) {
+    // 1. 检查验证框是否展开，如果没展开就不浪费计算资源
+    const box = document.getElementById('shakeTestBox');
+    if (!box || !box.classList.contains('show')) return;
+
+    // 2. 获取陀螺仪数据 (rad/s) 并取绝对值
+    // 假设正常晃动大约是 1~3 rad/s，我们设定 3.0 rad/s 为 100% 满格
+    const MAX_VAL = 3.0;
+
+    // 这里的 gx, gy, gz 是经过 task_sensor 坐标转换后的 Body Frame 数据
+    const valX = Math.min(Math.abs(imu.gx), MAX_VAL);
+    const valY = Math.min(Math.abs(imu.gy), MAX_VAL);
+    const valZ = Math.min(Math.abs(imu.gz), MAX_VAL);
+
+    // 3. 转换为百分比
+    const pctX = (valX / MAX_VAL) * 100;
+    const pctY = (valY / MAX_VAL) * 100;
+    const pctZ = (valZ / MAX_VAL) * 100;
+
+    // 4. 更新 DOM
+    document.getElementById('bar-shake-x').style.width = pctX + '%';
+    document.getElementById('bar-shake-y').style.width = pctY + '%';
+    document.getElementById('bar-shake-z').style.width = pctZ + '%';
+
+    // 视觉反馈：如果 Roll 或 Yaw 动静太大 (>50%)，把它们变红警告用户
+    // 如果 Pitch 动静大，变绿表示正确
+
+    const barX = document.getElementById('bar-shake-x');
+    const barY = document.getElementById('bar-shake-y');
+    const barZ = document.getElementById('bar-shake-z');
+
+    // X 和 Z 如果动得太厉害，说明轴不对 (或者用户手抖)
+    if (pctX > 30) barX.classList.replace('bg-secondary', 'bg-warning');
+    else barX.classList.replace('bg-warning', 'bg-secondary');
+
+    if (pctZ > 30) barZ.classList.replace('bg-secondary', 'bg-warning');
+    else barZ.classList.replace('bg-warning', 'bg-secondary');
+
+    // Y 应该动起来
+    if (pctY > 30) barY.classList.replace('bg-danger', 'bg-success');
+    else barY.classList.replace('bg-success', 'bg-danger');
 }

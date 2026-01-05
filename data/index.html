@@ -60,6 +60,11 @@
         }
 
         /* 倒扣 */
+
+        /* 简单的旋转过渡效果 */
+        .transition-transform {
+            transition: transform 0.5s ease-in-out;
+        }
     </style>
 </head>
 
@@ -231,11 +236,17 @@
                 <div id="view-calibration" class="view-section" style="display: none;">
                     <h3>传感器标定</h3>
                     <div class="bg-white p-4 rounded shadow-sm">
+
                         <ul class="nav nav-tabs mb-3" id="calibTab" role="tablist">
                             <li class="nav-item"><button class="nav-link active" id="tab-btn-mag"
                                     onclick="switchCalibTab('mag')">磁力计 (Mag)</button></li>
                             <li class="nav-item"><button class="nav-link" id="tab-btn-imu"
                                     onclick="switchCalibTab('imu')">加速度计 (IMU)</button></li>
+                            <li class="nav-item">
+                                <button class="nav-link" id="tab-btn-orient" onclick="switchCalibTab('orient')">
+                                    <i class="fas fa-sync-alt me-2"></i>安装方向 (Orientation)
+                                </button>
+                            </li>
                         </ul>
 
                         <div id="tab-content-mag" class="calib-content">
@@ -394,6 +405,113 @@
                             <div class="d-grid"><button id="btn-imu-calc" class="btn btn-secondary btn-lg" disabled
                                     onclick="finishImuCalibration()">计算并保存</button></div>
                         </div>
+
+                        <div id="tab-content-orient" class="calib-content" style="display:none;">
+
+                            <div class="alert alert-secondary d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong>当前设定方向：</strong>
+                                    <span id="orient-current-val" class="badge bg-dark fs-6 ms-2">Unknown</span>
+                                </div>
+                                <i id="orient-icon-preview" class="fas fa-microchip fs-2 transition-transform"></i>
+                            </div>
+
+                            <div class="row g-4 mb-4">
+                                <div class="col-md-6">
+                                    <div class="card h-100 border-primary">
+                                        <div class="card-header bg-primary text-white">步骤 1: 平放 (Level)</div>
+                                        <div class="card-body text-center">
+                                            <i class="fas fa-plane fs-1 mb-3 text-muted pose-level"></i>
+                                            <p class="card-text small text-muted">请将机器人<strong>水平正放</strong>（机腹贴地），保持静止。
+                                            </p>
+                                            <button id="btn-orient-level" class="btn btn-outline-primary w-100"
+                                                onclick="captureOrientStep('level')">
+                                                <i class="fas fa-camera me-2"></i>采集数据
+                                            </button>
+                                            <div id="res-orient-level" class="mt-2 text-success small fw-bold"
+                                                style="display:none;">
+                                                <i class="fas fa-check me-1"></i>已采集
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="col-md-6">
+                                    <div class="card h-100 border-info">
+                                        <div class="card-header bg-info text-dark">步骤 2: 抬头 (Nose Up)</div>
+                                        <div class="card-body text-center">
+                                            <i class="fas fa-plane fs-1 mb-3 text-muted"
+                                                style="transform: rotate(-90deg);"></i>
+                                            <p class="card-text small text-muted">
+                                                请将机器人<strong>机头垂直向上</strong>（机尾贴地），保持静止。</p>
+                                            <button id="btn-orient-up" class="btn btn-outline-info w-100"
+                                                onclick="captureOrientStep('noseUp')">
+                                                <i class="fas fa-camera me-2"></i>采集数据
+                                            </button>
+                                            <div id="res-orient-up" class="mt-2 text-success small fw-bold"
+                                                style="display:none;">
+                                                <i class="fas fa-check me-1"></i>已采集
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="d-grid gap-2">
+                                <button id="btn-orient-calc" class="btn btn-secondary btn-lg" disabled
+                                    onclick="calcOrientation()">
+                                    <i class="fas fa-calculator me-2"></i>自动检测方向
+                                </button>
+                            </div>
+
+                            <div class="mt-4">
+                                <button class="btn btn-sm btn-light w-100 text-muted" type="button"
+                                    data-bs-toggle="collapse" data-bs-target="#shakeTestBox">
+                                    <i class="fas fa-vial me-2"></i>展开验证工具 (Shake Test)
+                                </button>
+                                <div class="collapse mt-2" id="shakeTestBox">
+                                    <div class="card card-body bg-light">
+                                        <h6 class="mb-3"><i class="fas fa-wave-square me-2"></i>轴向响应验证</h6>
+                                        <p class="small text-muted mb-2">
+                                            动作：请抓取飞机做 <strong>抬头/低头 (Pitch)</strong> 动作。<br>
+                                            观察：<span class="text-danger fw-bold">Pitch (Y)</span> 进度条应大幅跳动，其他轴应保持静止。
+                                        </p>
+
+                                        <div class="row g-2 align-items-center mb-1">
+                                            <div class="col-3 text-end small font-monospace">Roll (X)</div>
+                                            <div class="col-9">
+                                                <div class="progress" style="height: 10px;">
+                                                    <div id="bar-shake-x" class="progress-bar bg-secondary"
+                                                        role="progressbar" style="width: 0%"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="row g-2 align-items-center mb-1">
+                                            <div class="col-3 text-end small font-monospace fw-bold text-danger">Pitch
+                                                (Y)</div>
+                                            <div class="col-9">
+                                                <div class="progress" style="height: 15px;">
+                                                    <div id="bar-shake-y" class="progress-bar bg-danger"
+                                                        role="progressbar" style="width: 0%"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="row g-2 align-items-center">
+                                            <div class="col-3 text-end small font-monospace">Yaw (Z)</div>
+                                            <div class="col-9">
+                                                <div class="progress" style="height: 10px;">
+                                                    <div id="bar-shake-z" class="progress-bar bg-secondary"
+                                                        role="progressbar" style="width: 0%"></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                     </div>
                 </div>
 

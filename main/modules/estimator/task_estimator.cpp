@@ -133,8 +133,8 @@ void task_estimator_entry(void* arg)
             {
                 print_div = 0;
                 // 打印姿态以及转换后的加速度值，方便确认是否平放时为 [0, 0, -9.8]
-                ESP_LOGI(TAG, "R: %6.1f P: %6.1f Y: %6.1f | AccZ: %5.2f",
-                    att.roll, att.pitch, att.yaw, accel.z());
+                // ESP_LOGI(TAG, "R: %6.1f P: %6.1f Y: %6.1f | AccZ: %5.2f",
+                //     att.roll, att.pitch, att.yaw, accel.z());
             }
         }
     }
