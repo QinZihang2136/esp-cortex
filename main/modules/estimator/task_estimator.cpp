@@ -24,7 +24,7 @@ void task_estimator_entry(void* arg)
     // 支持力是向上的 (指向天)，在 FRD 坐标系中，"上"是 -Z 方向。
     // 所以平放时，加速度计理论读数应该是 [0, 0, -9.8]。
     // 之前你写 9.8 导致 EKF 认为当前是倒扣状态 (Roll ~ 180)。
-    ekf.init(Eigen::Vector3f(0.0f, 0.0f, -9.81f));
+    ekf.init(Eigen::Vector3f(0.0f, 0.0f, 9.81f));
 
     // 2. 注册总线监听
     RobotBus::instance().imu.register_notifier();
@@ -76,8 +76,11 @@ void task_estimator_entry(void* arg)
 
             // --- A. 陀螺仪处理 (Deg/s -> Rad/s) ---
             Eigen::Vector3f gyro;
+            // gyro.x() = imu_data.gx * DEG_TO_RAD;
+            // gyro.y() = -imu_data.gy * DEG_TO_RAD; // [修正] 取反
+            // gyro.z() = imu_data.gz * DEG_TO_RAD; // [修正] 取反
             gyro.x() = imu_data.gx * DEG_TO_RAD;
-            gyro.y() = -imu_data.gy * DEG_TO_RAD; // [修正] 取反
+            gyro.y() = imu_data.gy * DEG_TO_RAD; // [修正] 取反
             gyro.z() = imu_data.gz * DEG_TO_RAD; // [修正] 取反
 
             // 执行预测
@@ -89,6 +92,8 @@ void task_estimator_entry(void* arg)
             accel.x() = -imu_data.ax;
             accel.y() = -imu_data.ay; // [修正] 取反
             accel.z() = -imu_data.az; // [修正] 取反, 解决 -170 度问题
+
+
 
             // 融合判断
             float acc_norm = accel.norm();
@@ -133,8 +138,8 @@ void task_estimator_entry(void* arg)
             {
                 print_div = 0;
                 // 打印姿态以及转换后的加速度值，方便确认是否平放时为 [0, 0, -9.8]
-                // ESP_LOGI(TAG, "R: %6.1f P: %6.1f Y: %6.1f | AccZ: %5.2f",
-                //     att.roll, att.pitch, att.yaw, accel.z());
+                ESP_LOGI(TAG, "R: %6.1f P: %6.1f Y: %6.1f | AccZ: %5.2f",
+                    att.roll, att.pitch, att.yaw, accel.z());
             }
         }
     }

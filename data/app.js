@@ -127,6 +127,15 @@ window.showPage = function (pageName, btnElement) {
 
     if (pageName === 'dashboard') switchDashView(currentDashMode);
     if (pageName === 'calibration') Plotly.relayout('mag-plot', { autosize: true });
+
+    // [修正点] 这里必须使用 pageName，而不是 pageId
+    if (pageName === 'monitor') {
+        if (typeof initMonitor === 'function') {
+            initMonitor();
+        } else {
+            console.error("initMonitor function not found!");
+        }
+    }
 };
 
 window.switchCalibTab = function (type) {
@@ -217,6 +226,10 @@ function handleDataPacket(jsonObj) {
             if (isCheckingMag && lastMagPacket) {
                 processMagCheck(payload.imu, lastMagPacket);
             }
+
+            // [New] 驱动原始数据监控页面 (Monitor)
+            // 这里调用我们新写的更新函数，传入 imu 和 mag
+            updateMonitor(payload.imu, payload.mag);
         }
     }
     // 2. 参数列表
@@ -1273,15 +1286,14 @@ function updateMagCheckUI(gyroVal, magVal) {
     setBar('gyro', gyroVal);
     setBar('mag', magVal);
 }
-// ================= 13. 磁力计全自动方向推断 (Motion Matching) =================
-// ================= 13. 分步轴向推断 (Axis Correlation Method) =================
+// ================= 13. 分步轴向推断 (Axis Correlation Method - Gauss适配版) =================
 
 let isAxisDetecting = false;
 let currentDetectAxis = null; // 'pitch' or 'roll'
 let axisSamples = { pitch: null, roll: null };
 let axisBuffer = []; // 存储磁力计原始向量
 let axisDetectStartTime = 0;
-const AXIS_DETECT_DURATION = 5000; // 5秒足够了
+const AXIS_DETECT_DURATION = 5000; // 5秒
 
 window.startAxisDetect = function (axis) {
     if (isAxisDetecting) return;
@@ -1322,12 +1334,12 @@ function updateAxisProgress() {
 function collectAxisData(mag) {
     if (!isAxisDetecting) return;
 
-    // 只记录 Mag 向量，不需要 Gyro，也不需要时间戳，越简单越稳
-    // 只有当数据变化足够大时才记录，防止静止噪声
+    // [修复] 针对 Gauss 单位 (0.x 级别) 大幅降低去重阈值
+    // 之前是 2.0，现在改为 0.01 (10 mGauss)
     if (axisBuffer.length > 0) {
         const last = axisBuffer[axisBuffer.length - 1];
         const dist = Math.abs(mag.x - last.x) + Math.abs(mag.y - last.y) + Math.abs(mag.z - last.z);
-        if (dist < 2.0) return; // 忽略微小抖动
+        if (dist < 0.01) return; // 忽略极其微小的抖动
     }
 
     axisBuffer.push(new THREE.Vector3(mag.x, mag.y, mag.z));
@@ -1339,36 +1351,29 @@ function finishAxisDetect() {
 
     // UI 恢复
     const btn = document.getElementById(`btn-step-${axis}`);
-    btn.innerHTML = '<i class="fas fa-check"></i> 完成';
     const bar = document.getElementById(`prog-step-${axis}`);
     bar.classList.remove('progress-bar-striped', 'progress-bar-animated');
-    bar.innerText = "采集完成";
 
-    // --- 核心算法：计算旋转平面的法向量 ---
-    // 原理：当绕某个轴旋转时，Mag向量的变化轨迹位于垂直于该轴的平面上。
-    // 计算方法：累加相邻点的叉乘 (Cross Product)。
-    // V_rotation_axis = Sum( V[i] x V[i+1] )
+    // --- 核心算法 ---
 
     let rotationAxisSum = new THREE.Vector3(0, 0, 0);
     let validPairs = 0;
+
+    // Debug: 打印采集到的点数
+    console.log(`[AxisDetect] Collected ${axisBuffer.length} samples for ${axis}`);
 
     for (let i = 1; i < axisBuffer.length; i++) {
         const v1 = axisBuffer[i - 1];
         const v2 = axisBuffer[i];
 
-        // 叉乘得到法向量 (即旋转轴在 Sensor 坐标系下的方向)
+        // 叉乘得到法向量 (即旋转轴)
         const cross = new THREE.Vector3().crossVectors(v1, v2);
 
-        // 只有当旋转幅度够大时，叉乘结果才可靠
-        if (cross.length() > 5.0) {
-            // 统一方向：我们要判断它是正转还是反转有点难，
-            // 但我们主要关心它在哪个轴上分量最大。
-            // 为了防止正反转抵消，我们这里取绝对值累加其实是不行的，因为方向是有意义的。
-            // 但考虑到用户可能来回晃，来回晃的时候，v1xv2 方向会反向。
-            // 改进：我们利用 Gyro 数据辅助判断方向太复杂，
-            // 简单点：我们只求 "主轴 (Principal Axis)"。
-            // 我们对 cross 的每个分量取绝对值后再累加，判断哪个轴最活跃。
-
+        // [修复] 针对 Gauss 单位大幅降低有效性阈值
+        // 0.2 * 0.2 * sin(theta) ≈ 0.00x 级别
+        // 之前是 5.0，现在改为 0.002
+        if (cross.length() > 0.002) {
+            // 累加绝对值分量，判断主轴
             rotationAxisSum.x += Math.abs(cross.x);
             rotationAxisSum.y += Math.abs(cross.y);
             rotationAxisSum.z += Math.abs(cross.z);
@@ -1376,22 +1381,27 @@ function finishAxisDetect() {
         }
     }
 
-    if (validPairs < 10) {
-        alert("动作幅度太小，请重试！\n请大幅度晃动。");
+    console.log(`[AxisDetect] Valid pairs: ${validPairs}, SumVec:`, rotationAxisSum);
+
+    // 如果有效数据太少，提示重试
+    if (validPairs < 5) {
+        alert(`检测失败：动作幅度太小 (${validPairs} 帧有效)。\n\n请确保大幅度抬头/低头或摇摆。`);
+        btn.innerHTML = '<i class="fas fa-redo"></i> 重试';
         btn.disabled = false;
-        btn.innerHTML = '<i class="fas fa-play"></i> 重试';
+        bar.innerText = "数据不足";
         return;
     }
 
-    // 归一化，看哪个轴分量最大
+    // 成功
+    btn.innerHTML = '<i class="fas fa-check"></i> 完成';
+    bar.innerText = "采集完成";
+
+    // 归一化
     rotationAxisSum.normalize();
     axisSamples[axis] = rotationAxisSum;
 
-    console.log(`Axis [${axis}] detected vector:`, rotationAxisSum);
-
     // 逻辑流转
     if (axis === 'pitch') {
-        // 开启 Roll 按钮
         document.getElementById('btn-step-roll').disabled = false;
         document.getElementById('prog-step-roll').innerText = "请点击开始";
     } else if (axis === 'roll') {
@@ -1405,18 +1415,8 @@ function calculateFinalOrientation() {
     const resDiv = document.getElementById('axis-detect-result');
     resDiv.style.display = 'block';
 
-    // --- 最终推断 ---
-    // 理论上：
-    // Pitch 动作 (绕机体 Y 转) -> 应该检测到 Sensor 的某个轴分量最大
-    // Roll 动作 (绕机体 X 转) -> 应该检测到 Sensor 的另一个轴分量最大
-
     const pitchVec = axisSamples.pitch; // 对应 Body Y
     const rollVec = axisSamples.roll;  // 对应 Body X
-
-    // 寻找最佳匹配的旋转矩阵
-    // 我们遍历 24 种 Rotation，看哪一种把 Sensor 坐标系转动后，
-    // 能让 Sensor_Pitch_Axis 对应 Body Y (0,1,0)
-    // 且 Sensor_Roll_Axis  对应 Body X (1,0,0)
 
     let bestRotId = -1;
     let maxScore = -Infinity;
@@ -1426,18 +1426,13 @@ function calculateFinalOrientation() {
         const euler = new THREE.Euler(rot.roll * d2r, rot.pitch * d2r, rot.yaw * d2r, 'ZYX');
         const q = new THREE.Quaternion().setFromEuler(euler);
 
-        // 将 Body 的 X(Roll) 和 Y(Pitch) 轴逆向转到 Sensor 系，看看和测量值是否重合？
-        // 或者：将测量的 Sensor 轴正向转到 Body 系，看看是否对齐？ -> 这个更直观
-
-        // 测量的 Roll 轴 (Sensor Frame) -> 转到 Body Frame
+        // 验证逻辑：
+        // 将测量的 Sensor Frame 下的旋转轴，转到 Body Frame
         const rollInBody = rollVec.clone().applyQuaternion(q);
-        // 测量的 Pitch 轴 (Sensor Frame) -> 转到 Body Frame
         const pitchInBody = pitchVec.clone().applyQuaternion(q);
 
-        // 评分：点积 (投影)。绝对值越大说明越平行。
-        // 我们期望 rollInBody 接近 (1, 0, 0)
-        // 我们期望 pitchInBody 接近 (0, 1, 0)
-        // 此时我们不关心正负号（因为用户可能反着摇），只关心轴对不对
+        // 评分：Body X 应该接近 (1,0,0)，Body Y 应该接近 (0,1,0)
+        // 取绝对值是因为用户可能正向摇，也可能反向摇，但轴线是不变的
         const score = Math.abs(rollInBody.x) + Math.abs(pitchInBody.y);
 
         if (score > maxScore) {
@@ -1448,8 +1443,8 @@ function calculateFinalOrientation() {
 
     const match = ROTATION_LIST.find(r => r.id === bestRotId);
 
-    // 显示结果
-    if (maxScore > 1.5) { // 满分是 2.0
+    // [调整] 评分阈值，因为实际测量会有噪声，1.4 分（满分2.0）通常就比较可信了
+    if (maxScore > 1.4) {
         resDiv.innerHTML = `
             <h5 class="text-success"><i class="fas fa-check-circle"></i> 识别成功</h5>
             <div class="fs-4 fw-bold mb-2">${match.name}</div>
@@ -1461,8 +1456,253 @@ function calculateFinalOrientation() {
     } else {
         resDiv.innerHTML = `
             <h5 class="text-danger"><i class="fas fa-times-circle"></i> 识别失败</h5>
-            <p class="mb-0">数据特征不明显 (得分 ${maxScore.toFixed(2)})。<br>可能是晃动幅度不够，或只晃动了一个轴。</p>
+            <p class="mb-0">数据特征不明显 (得分 ${maxScore.toFixed(2)})。<br>可能是动作不够标准。</p>
             <button class="btn btn-outline-dark btn-sm mt-2" onclick="location.reload()">重新开始</button>
         `;
+    }
+}
+
+// ================= 14. 原始数据监控 (Monitor & Scope) =================
+
+let monitorInited = false;
+let isChartPaused = false;
+let currentScopeType = 'acc'; // acc, gyro, mag
+
+// 3D 对象引用
+let vecRenderer, vecScene, vecCamera, vecArrowAcc, vecArrowMag;
+let attRenderer, attScene, attCamera, attBoxAcc, attBoxGyro;
+let gyroQuat = new THREE.Quaternion(); // 陀螺仪积分姿态
+
+// 波形数据缓存 (用于 Plotly)
+let scopeData = {
+    x: [],
+    y0: [], y1: [], y2: [] // X, Y, Z
+};
+const MAX_SCOPE_POINTS = 300; // 保留最近 300 个点
+
+// --- 初始化入口 ---
+function initMonitor() {
+    if (monitorInited) return;
+    monitorInited = true;
+
+    // 1. 初始化 Plotly 波形图
+    const layout = {
+        margin: { t: 20, r: 20, b: 40, l: 50 },
+        showlegend: true,
+        legend: { orientation: 'h', y: 1.1 },
+        xaxis: { title: 'Time' },
+        // [关键] Y轴自适应设置
+        yaxis: {
+            autorange: true,   // 开启自适应
+            fixedrange: false, // 允许用户手动缩放
+            title: 'Value'
+        }
+    };
+
+    // 初始化三条线 (X, Y, Z)
+    Plotly.newPlot('plotly-scope', [
+        { y: [], mode: 'lines', name: 'X-Axis', line: { color: '#dc3545' } },
+        { y: [], mode: 'lines', name: 'Y-Axis', line: { color: '#198754' } },
+        { y: [], mode: 'lines', name: 'Z-Axis', line: { color: '#0d6efd' } }
+    ], layout, { responsive: true, displayModeBar: true });
+
+    // 2. 初始化 3D 视图 (向量)
+    initVectorScene();
+
+    // 3. 初始化 3D 视图 (姿态对比)
+    initAttitudeScene();
+
+    // 启动动画循环
+    animateMonitor();
+}
+
+// 切换波形类型
+window.switchScopeTrace = function (type) {
+    currentScopeType = type;
+    // 清空当前图表数据以避免混乱
+    Plotly.restyle('plotly-scope', { y: [[], [], []] });
+    scopeData = { x: [], y0: [], y1: [], y2: [] };
+};
+
+window.toggleChartPause = function () {
+    isChartPaused = document.getElementById('btn-pause-chart').checked;
+};
+
+window.resetGyroIntegration = function () {
+    gyroQuat.set(0, 0, 0, 1); // 重置为 Identity
+};
+
+// --- 核心更新逻辑 (在 handleDataPacket 中调用) ---
+function updateMonitor(imu, mag) {
+    if (!monitorInited || document.getElementById('view-monitor').style.display === 'none') return;
+
+    // 1. 更新数值仪表盘
+    document.getElementById('raw-ax').innerText = imu.ax.toFixed(2);
+    document.getElementById('raw-ay').innerText = imu.ay.toFixed(2);
+    document.getElementById('raw-az').innerText = imu.az.toFixed(2);
+    const aNorm = Math.sqrt(imu.ax ** 2 + imu.ay ** 2 + imu.az ** 2);
+    document.getElementById('raw-a-norm').innerText = aNorm.toFixed(2);
+
+    document.getElementById('raw-gx').innerText = imu.gx.toFixed(2);
+    document.getElementById('raw-gy').innerText = imu.gy.toFixed(2);
+    document.getElementById('raw-gz').innerText = imu.gz.toFixed(2);
+
+    if (mag) {
+        document.getElementById('raw-mx').innerText = mag.x.toFixed(2);
+        document.getElementById('raw-my').innerText = mag.y.toFixed(2);
+        document.getElementById('raw-mz').innerText = mag.z.toFixed(2);
+        const mNorm = Math.sqrt(mag.x ** 2 + mag.y ** 2 + mag.z ** 2);
+        document.getElementById('raw-m-norm').innerText = mNorm.toFixed(2);
+    }
+
+    // 2. 更新 3D 向量 (Vector Scene)
+    // 绿色箭头: 加速度计 (支持力) -> 归一化后显示
+    if (vecArrowAcc) {
+        const vAcc = new THREE.Vector3(imu.ax, imu.ay, imu.az).normalize();
+        // 如果是 FRD，平放时 az=-9.8 (向上)，箭头应指向 +Z 还是 -Z 取决于 Threejs 坐标系
+        // Threejs 是 Y-Up, Right-Handed. 通常我们简单映射: x->x, y->z, z->-y (Visual mapping)
+        // 为了直观，我们直接按 Sensor 本地坐标系画:
+        vecArrowAcc.setDirection(vAcc);
+        vecArrowAcc.setLength(1.5); // 固定长度
+    }
+    // 红色箭头: 磁力计
+    if (mag && vecArrowMag) {
+        const vMag = new THREE.Vector3(mag.x, mag.y, mag.z).normalize();
+        vecArrowMag.setDirection(vMag);
+        vecArrowMag.setLength(1.5);
+    }
+
+    // 3. 更新 3D 姿态 (Attitude Scene)
+    // A. 纯重力解算 (Accel Attitude) - 简单几何
+    // Roll = atan2(ay, az), Pitch = atan2(-ax, sqrt(ay^2+az^2))
+    // 注意: 这只是粗略估算，用于对比
+    const accRoll = Math.atan2(imu.ay, imu.az);
+    const accPitch = Math.atan2(-imu.ax, Math.sqrt(imu.ay ** 2 + imu.az ** 2));
+
+    if (attBoxAcc) {
+        // 直接设置欧拉角 (Order ZYX)
+        attBoxAcc.rotation.set(accRoll, 0, -accPitch); // 映射到 Threejs 视觉可能需要微调轴向
+    }
+
+    // B. 陀螺仪积分 (Gyro Integration)
+    // q_new = q_old * dq
+    // dt 假设 0.005s (或从 imu timestamp 计算)
+    const dt = 0.005; // 简化
+    // 将 deg/s 转 rad/s
+    const d2r = Math.PI / 180.0;
+    const wx = imu.gx * d2r;
+    const wy = imu.gy * d2r;
+    const wz = imu.gz * d2r;
+
+    const omega = Math.sqrt(wx * wx + wy * wy + wz * wz);
+    if (omega > 0.0001) {
+        const axis = new THREE.Vector3(wx, wy, wz).normalize();
+        const angle = omega * dt;
+        const dq = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+        gyroQuat.multiply(dq);
+        gyroQuat.normalize();
+    }
+
+    if (attBoxGyro) {
+        attBoxGyro.setRotationFromQuaternion(gyroQuat);
+    }
+
+    // 4. 更新 Plotly 波形
+    if (!isChartPaused) {
+        const now = new Date();
+        const timeStr = now.toISOString(); // 或简单计数
+
+        let val0 = 0, val1 = 0, val2 = 0;
+
+        if (currentScopeType === 'acc') {
+            val0 = imu.ax; val1 = imu.ay; val2 = imu.az;
+        } else if (currentScopeType === 'gyro') {
+            val0 = imu.gx; val1 = imu.gy; val2 = imu.gz;
+        } else if (currentScopeType === 'mag' && mag) {
+            val0 = mag.x; val1 = mag.y; val2 = mag.z;
+        }
+
+        // 使用 Plotly.extendTraces 高效追加数据
+        Plotly.extendTraces('plotly-scope', {
+            y: [[val0], [val1], [val2]]
+        }, [0, 1, 2], MAX_SCOPE_POINTS);
+    }
+}
+
+// --- 3D 初始化辅助函数 ---
+function initVectorScene() {
+    const container = document.getElementById('scene-vectors');
+    vecScene = new THREE.Scene();
+    vecScene.background = new THREE.Color(0xf8f9fa); // 浅灰背景
+
+    vecCamera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 100);
+    vecCamera.position.set(3, 2, 3);
+    vecCamera.lookAt(0, 0, 0);
+
+    vecRenderer = new THREE.WebGLRenderer({ antialias: true });
+    vecRenderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(vecRenderer.domElement);
+
+    const controls = new THREE.OrbitControls(vecCamera, vecRenderer.domElement);
+    controls.enableZoom = false;
+
+    // 坐标轴辅助 (RGB = XYZ)
+    const axesHelper = new THREE.AxesHelper(2);
+    vecScene.add(axesHelper);
+
+    // 网格
+    const gridHelper = new THREE.GridHelper(5, 10);
+    vecScene.add(gridHelper);
+
+    // 箭头对象
+    const origin = new THREE.Vector3(0, 0, 0);
+    // Accel 箭头 (绿)
+    vecArrowAcc = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), origin, 1.5, 0x198754);
+    vecScene.add(vecArrowAcc);
+    // Mag 箭头 (红)
+    vecArrowMag = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), origin, 1.5, 0xdc3545);
+    vecScene.add(vecArrowMag);
+}
+
+function initAttitudeScene() {
+    const container = document.getElementById('scene-attitude');
+    attScene = new THREE.Scene();
+    attScene.background = new THREE.Color(0xf0f0f0);
+
+    attCamera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 100);
+    attCamera.position.set(0, 3, 5); // 后上方视角
+    attCamera.lookAt(0, 0, 0);
+
+    attRenderer = new THREE.WebGLRenderer({ antialias: true });
+    attRenderer.setSize(container.clientWidth, container.clientHeight);
+    container.appendChild(attRenderer.domElement);
+
+    // 灯光
+    const light = new THREE.DirectionalLight(0xffffff, 1);
+    light.position.set(5, 10, 7);
+    attScene.add(light);
+    attScene.add(new THREE.AmbientLight(0x404040));
+
+    // 物体 1: Accel 姿态 (半透明线框盒子)
+    const geo = new THREE.BoxGeometry(2, 0.2, 1.5); // 像个机翼
+    const matAcc = new THREE.MeshBasicMaterial({ color: 0x999999, wireframe: true, transparent: true, opacity: 0.5 });
+    attBoxAcc = new THREE.Mesh(geo, matAcc);
+    attScene.add(attBoxAcc);
+
+    // 物体 2: Gyro 姿态 (实心盒子)
+    const matGyro = new THREE.MeshPhongMaterial({ color: 0x0d6efd });
+    attBoxGyro = new THREE.Mesh(geo, matGyro);
+    attScene.add(attBoxGyro);
+
+    const gridHelper = new THREE.GridHelper(10, 10);
+    gridHelper.position.y = -2;
+    attScene.add(gridHelper);
+}
+
+function animateMonitor() {
+    requestAnimationFrame(animateMonitor);
+    if (document.getElementById('view-monitor').style.display !== 'none') {
+        if (vecRenderer && vecScene && vecCamera) vecRenderer.render(vecScene, vecCamera);
+        if (attRenderer && attScene && attCamera) attRenderer.render(attScene, attCamera);
     }
 }

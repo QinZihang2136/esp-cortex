@@ -124,6 +124,10 @@
                     <i class="fas fa-compass me-2"></i>传感器标定
                 </a>
                 <a href="#" class="list-group-item list-group-item-action bg-transparent second-text"
+                    onclick="showPage('monitor', this)">
+                    <i class="fas fa-stethoscope me-2"></i>数据监控
+                </a>
+                <a href="#" class="list-group-item list-group-item-action bg-transparent second-text"
                     onclick="showPage('terminal', this)">
                     <i class="fas fa-terminal me-2"></i>系统日志
                 </a>
@@ -654,6 +658,128 @@
                             </div>
                         </div>
 
+                    </div>
+                </div>
+
+                <div id="view-monitor" class="view-section" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h3><i class="fas fa-microscope me-2"></i>原始数据示波器 (Raw Sensor Scope)</h3>
+                        <div>
+                            <button class="btn btn-outline-danger btn-sm me-2" onclick="resetGyroIntegration()">
+                                <i class="fas fa-undo me-1"></i>重置陀螺仪积分
+                            </button>
+                            <div class="btn-group" role="group">
+                                <input type="checkbox" class="btn-check" id="btn-pause-chart" autocomplete="off"
+                                    onchange="toggleChartPause()">
+                                <label class="btn btn-outline-secondary btn-sm" for="btn-pause-chart">
+                                    <i class="fas fa-pause me-1"></i>暂停波形
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-3 mb-4 text-center font-monospace">
+                        <div class="col-md-4">
+                            <div class="card border-primary h-100">
+                                <div class="card-header bg-primary text-white py-1">Accelerometer (m/s²)</div>
+                                <div class="card-body py-2">
+                                    <div class="row">
+                                        <div class="col-4">X: <span id="raw-ax" class="fw-bold">0.00</span></div>
+                                        <div class="col-4">Y: <span id="raw-ay" class="fw-bold">0.00</span></div>
+                                        <div class="col-4">Z: <span id="raw-az" class="fw-bold">0.00</span></div>
+                                    </div>
+                                    <div class="mt-1 small text-muted border-top pt-1">
+                                        Norm: <span id="raw-a-norm" class="fw-bold text-dark">0.00</span>
+                                        (Ref: 9.8)
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card border-success h-100">
+                                <div class="card-header bg-success text-white py-1">Gyroscope (deg/s)</div>
+                                <div class="card-body py-2">
+                                    <div class="row">
+                                        <div class="col-4">X: <span id="raw-gx" class="fw-bold">0.00</span></div>
+                                        <div class="col-4">Y: <span id="raw-gy" class="fw-bold">0.00</span></div>
+                                        <div class="col-4">Z: <span id="raw-gz" class="fw-bold">0.00</span></div>
+                                    </div>
+                                    <div class="mt-1 small text-muted border-top pt-1">
+                                        状态: <span id="raw-gyro-status">--</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card border-danger h-100">
+                                <div class="card-header bg-danger text-white py-1">Magnetometer (Gauss)</div>
+                                <div class="card-body py-2">
+                                    <div class="row">
+                                        <div class="col-4">X: <span id="raw-mx" class="fw-bold">0.00</span></div>
+                                        <div class="col-4">Y: <span id="raw-my" class="fw-bold">0.00</span></div>
+                                        <div class="col-4">Z: <span id="raw-mz" class="fw-bold">0.00</span></div>
+                                    </div>
+                                    <div class="mt-1 small text-muted border-top pt-1">
+                                        Norm: <span id="raw-m-norm" class="fw-bold text-dark">0.00</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row mb-4">
+                        <div class="col-md-6">
+                            <div class="card shadow-sm">
+                                <div class="card-header py-1 small fw-bold bg-light">
+                                    <i class="fas fa-arrows-alt me-1"></i>向量视图 (Vectors)
+                                </div>
+                                <div class="card-body p-0 position-relative">
+                                    <div id="scene-vectors" style="width: 100%; height: 300px;"></div>
+                                    <div class="position-absolute top-0 end-0 p-2 small bg-white opacity-75 rounded">
+                                        <span class="text-success fw-bold">█ Accel (重力)</span><br>
+                                        <span class="text-danger fw-bold">█ Mag (北极)</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <div class="card shadow-sm">
+                                <div class="card-header py-1 small fw-bold bg-light">
+                                    <i class="fas fa-cube me-1"></i>姿态对比 (Gyro vs Accel)
+                                </div>
+                                <div class="card-body p-0 position-relative">
+                                    <div id="scene-attitude" style="width: 100%; height: 300px;"></div>
+                                    <div class="position-absolute top-0 end-0 p-2 small bg-white opacity-75 rounded">
+                                        <span class="text-secondary fw-bold" style="opacity: 0.5;">█ Accel
+                                            (仅倾角)</span><br>
+                                        <span class="text-primary fw-bold">█ Gyro (积分)</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card shadow-sm">
+                        <div class="card-header py-1 bg-light d-flex justify-content-between">
+                            <span class="small fw-bold"><i class="fas fa-wave-square me-1"></i>实时波形 (Real-time)</span>
+                            <div class="btn-group btn-group-sm">
+                                <input type="radio" class="btn-check" name="scopeTrace" id="trace-acc" checked
+                                    onclick="switchScopeTrace('acc')">
+                                <label class="btn btn-outline-secondary" for="trace-acc">Accel</label>
+
+                                <input type="radio" class="btn-check" name="scopeTrace" id="trace-gyro"
+                                    onclick="switchScopeTrace('gyro')">
+                                <label class="btn btn-outline-secondary" for="trace-gyro">Gyro</label>
+
+                                <input type="radio" class="btn-check" name="scopeTrace" id="trace-mag"
+                                    onclick="switchScopeTrace('mag')">
+                                <label class="btn btn-outline-secondary" for="trace-mag">Mag</label>
+                            </div>
+                        </div>
+                        <div class="card-body p-1">
+                            <div id="plotly-scope" style="width: 100%; height: 350px;"></div>
+                        </div>
                     </div>
                 </div>
 
