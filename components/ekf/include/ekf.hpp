@@ -48,6 +48,30 @@ public:
         }
     };
 
+    // ==========================================
+    // 4. Debug 信息结构体 (工程调试用)
+    // ==========================================
+    struct AccelDebug
+    {
+        bool used = false;
+        float acc_norm = 0.0f;
+        Vector3f z = Vector3f::Zero();        // 归一化后的测量加速度方向
+        Vector3f g_pred = Vector3f::Zero();   // 预测重力方向(机体系)
+        Vector3f innov = Vector3f::Zero();    // y = z - g_pred
+        Vector3f dtheta = Vector3f::Zero();   // 注入的姿态小角
+        Vector3f dbias = Vector3f::Zero();    // 注入的 bias 修正量
+    };
+
+    struct MagDebug
+    {
+        bool used = false;
+        float mag_norm = 0.0f;
+        float yaw_measured = 0.0f;
+        float yaw_residual = 0.0f;
+        Vector3f dtheta = Vector3f::Zero();
+        Vector3f dbias = Vector3f::Zero();
+    };
+
     EspEKF();
 
     // --- 接口函数 (API) ---
@@ -60,6 +84,10 @@ public:
     Vector3f get_euler_angles();
     Vector3f get_gyro_bias();
 
+    // Debug Getter
+    AccelDebug get_last_accel_debug() const { return accel_dbg_; }
+    MagDebug   get_last_mag_debug()   const { return mag_dbg_; }
+
     // --- Setter ---
     // 设置过程噪声 (Process Noise)
     void set_process_noise(float q_angle, float q_bias);
@@ -68,7 +96,7 @@ public:
 
 private:
     // ==========================================
-    // 4. 成员变量
+    // 5. 成员变量
     // ==========================================
 
     // 【核心变化】：不再用 VectorX x，改用结构体
@@ -81,6 +109,10 @@ private:
     MatrixQ Q;               // 预测过程噪声
     Matrix3f R_accel;        // 加速度计测量噪声 (3x3)
     Matrix3f R_mag;          // 磁力计测量噪声 (3x3)
+
+    // Debug 缓存
+    AccelDebug accel_dbg_;
+    MagDebug   mag_dbg_;
 
     bool is_initialized = false;
 };
