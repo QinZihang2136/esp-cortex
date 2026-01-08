@@ -891,8 +891,24 @@ function connectWebSocket() {
     const url = `ws://${ESP_IP}/ws`;
     logToTerminal("Connecting to " + url);
     ws = new WebSocket(url);
-    ws.onopen = () => { setConnStatus("在线 (Online)", "bg-success"); logToTerminal("WebSocket Connected"); };
-    ws.onclose = () => { setConnStatus("断开 (Offline)", "bg-danger"); logToTerminal("WebSocket Closed"); };
+
+    ws.onopen = () => {
+        setConnStatus("在线 (Online)", "bg-success");
+        logToTerminal("WebSocket Connected");
+
+        // 【新增】连接建立后，立即发送一条指令来“激活”链路
+        // 同时这也顺便解决了“网页刚打开时参数表是空的”这个问题
+        sendJson({ cmd: "get_params" });
+    };
+
+    ws.onclose = () => {
+        setConnStatus("断开 (Offline)", "bg-danger");
+        logToTerminal("WebSocket Closed");
+
+        // 可选：断开后尝试 3秒后 自动重连
+        setTimeout(connectWebSocket, 3000);
+    };
+
     ws.onmessage = (e) => {
         try { handleDataPacket(JSON.parse(e.data)); }
         catch (err) { console.error(err); }
@@ -1533,10 +1549,11 @@ window.resetGyroIntegration = function () {
 };
 
 // --- 核心更新逻辑 (在 handleDataPacket 中调用) ---
+// --- 核心更新逻辑 (在 handleDataPacket 中调用) ---
 function updateMonitor(imu, mag) {
     if (!monitorInited || document.getElementById('view-monitor').style.display === 'none') return;
 
-    // 1. 更新数值仪表盘
+    // 1. 更新数值仪表盘 (保持不变)
     document.getElementById('raw-ax').innerText = imu.ax.toFixed(2);
     document.getElementById('raw-ay').innerText = imu.ay.toFixed(2);
     document.getElementById('raw-az').innerText = imu.az.toFixed(2);
@@ -1555,48 +1572,64 @@ function updateMonitor(imu, mag) {
         document.getElementById('raw-m-norm').innerText = mNorm.toFixed(2);
     }
 
-    // 2. 更新 3D 向量 (Vector Scene)
-    // 绿色箭头: 加速度计 (支持力) -> 归一化后显示
+    // 2. 向量视图 (保持你刚才满意的状态)
     if (vecArrowAcc) {
-        const vAcc = new THREE.Vector3(imu.ax, imu.ay, imu.az).normalize();
-        // 如果是 FRD，平放时 az=-9.8 (向上)，箭头应指向 +Z 还是 -Z 取决于 Threejs 坐标系
-        // Threejs 是 Y-Up, Right-Handed. 通常我们简单映射: x->x, y->z, z->-y (Visual mapping)
-        // 为了直观，我们直接按 Sensor 本地坐标系画:
+        // Accel: FRD z-down is gravity. So -az is up.
+        // Map: y -> x (Right), -z -> y (Up), x -> z (Forward)
+        const vAcc = new THREE.Vector3(imu.ay, -imu.az, imu.ax).normalize();
         vecArrowAcc.setDirection(vAcc);
-        vecArrowAcc.setLength(1.5); // 固定长度
+        vecArrowAcc.setLength(1.5);
     }
-    // 红色箭头: 磁力计
     if (mag && vecArrowMag) {
-        const vMag = new THREE.Vector3(mag.x, mag.y, mag.z).normalize();
+        const vMag = new THREE.Vector3(mag.y, -mag.z, mag.x).normalize();
         vecArrowMag.setDirection(vMag);
         vecArrowMag.setLength(1.5);
     }
 
-    // 3. 更新 3D 姿态 (Attitude Scene)
-    // A. 纯重力解算 (Accel Attitude) - 简单几何
-    // Roll = atan2(ay, az), Pitch = atan2(-ax, sqrt(ay^2+az^2))
-    // 注意: 这只是粗略估算，用于对比
+    // =========================================================
+    // [修正重点 1] Accel (线框) 轴向交换修正
+    // =========================================================
+
+    // 计算倾角 (保持公式不变)
+    // accRoll: 绕 X 轴旋转 (左右倾斜)
     const accRoll = Math.atan2(imu.ay, imu.az);
+    // accPitch: 绕 Y 轴旋转 (抬头低头)
     const accPitch = Math.atan2(-imu.ax, Math.sqrt(imu.ay ** 2 + imu.az ** 2));
 
     if (attBoxAcc) {
-        // 直接设置欧拉角 (Order ZYX)
-        attBoxAcc.rotation.set(accRoll, 0, -accPitch); // 映射到 Threejs 视觉可能需要微调轴向
+        // Three.js rotation.set(x, y, z) 对应的是 绕X轴, 绕Y轴, 绕Z轴
+        // 在我们的视图映射中：
+        // 视觉 X轴 (红色) = 机体 Pitch 轴
+        // 视觉 Y轴 (绿色) = 机体 Yaw 轴 (Accel测不到)
+        // 视觉 Z轴 (蓝色) = 机体 Roll 轴
+
+        // 之前写反了，现在交换位置：
+        // 参数1 (Rot X) <- accPitch (之前是 accRoll)
+        // 参数3 (Rot Z) <- accRoll  (之前是 accPitch)
+        // 注意：如果方向反了，试着给 accRoll 加负号，即 -accRoll
+        attBoxAcc.rotation.set(-accPitch, 0, -accRoll);
     }
 
-    // B. 陀螺仪积分 (Gyro Integration)
-    // q_new = q_old * dq
-    // dt 假设 0.005s (或从 imu timestamp 计算)
-    const dt = 0.005; // 简化
-    // 将 deg/s 转 rad/s
-    const d2r = Math.PI / 180.0;
-    const wx = imu.gx * d2r;
-    const wy = imu.gy * d2r;
-    const wz = imu.gz * d2r;
+    // =========================================================
+    // [修正重点 2] Gyro (蓝色实体) Roll 反向修正
+    // =========================================================
+
+    const dt = 0.05;
+    const wx = imu.gx;
+    const wy = imu.gy;
+    const wz = imu.gz;
 
     const omega = Math.sqrt(wx * wx + wy * wy + wz * wz);
-    if (omega > 0.0001) {
-        const axis = new THREE.Vector3(wx, wy, wz).normalize();
+    if (omega > 0.001) {
+        // 轴向映射：
+        // wy (Pitch) -> x
+        // -wz (Yaw)  -> y
+        // wx (Roll)  -> z
+
+        // [修改] 之前是 wx，现在改为 -wx (取反)
+        // 这样可以反转 Roll 的旋转方向，解决"反向"问题
+        const axis = new THREE.Vector3(wy, -wz, -wx).normalize();
+
         const angle = omega * dt;
         const dq = new THREE.Quaternion().setFromAxisAngle(axis, angle);
         gyroQuat.multiply(dq);
@@ -1607,13 +1640,9 @@ function updateMonitor(imu, mag) {
         attBoxGyro.setRotationFromQuaternion(gyroQuat);
     }
 
-    // 4. 更新 Plotly 波形
+    // 4. 波形图更新 (保持不变)
     if (!isChartPaused) {
-        const now = new Date();
-        const timeStr = now.toISOString(); // 或简单计数
-
         let val0 = 0, val1 = 0, val2 = 0;
-
         if (currentScopeType === 'acc') {
             val0 = imu.ax; val1 = imu.ay; val2 = imu.az;
         } else if (currentScopeType === 'gyro') {
@@ -1621,8 +1650,6 @@ function updateMonitor(imu, mag) {
         } else if (currentScopeType === 'mag' && mag) {
             val0 = mag.x; val1 = mag.y; val2 = mag.z;
         }
-
-        // 使用 Plotly.extendTraces 高效追加数据
         Plotly.extendTraces('plotly-scope', {
             y: [[val0], [val1], [val2]]
         }, [0, 1, 2], MAX_SCOPE_POINTS);

@@ -20,7 +20,7 @@ public:
     CommandQueue<MotionCommand> motion_cmd;  // 运动指令的信箱
 
     // ================= 单例模式核心代码 =================
-    // 这是为了保证全世界只有一个 RobotBus 实例
+    // 这是为了保证只有一个 RobotBus 实例
     static RobotBus& instance()
     {
         static RobotBus instance;  // 静态变量，只会创建一次

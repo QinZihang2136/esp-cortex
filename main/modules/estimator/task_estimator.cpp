@@ -79,9 +79,9 @@ void task_estimator_entry(void* arg)
             // gyro.x() = imu_data.gx * DEG_TO_RAD;
             // gyro.y() = -imu_data.gy * DEG_TO_RAD; // [修正] 取反
             // gyro.z() = imu_data.gz * DEG_TO_RAD; // [修正] 取反
-            gyro.x() = imu_data.gx * DEG_TO_RAD;
-            gyro.y() = imu_data.gy * DEG_TO_RAD; // [修正] 取反
-            gyro.z() = imu_data.gz * DEG_TO_RAD; // [修正] 取反
+            gyro.x() = imu_data.gx;
+            gyro.y() = imu_data.gy; // [修正] 取反
+            gyro.z() = imu_data.gz; // [修正] 取反
 
             // 执行预测
             ekf.predict(gyro, dt);
