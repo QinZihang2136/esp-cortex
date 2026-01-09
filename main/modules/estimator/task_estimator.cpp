@@ -45,14 +45,13 @@ void task_estimator_entry(void* arg)
 
     // 2. 注册总线监听
     RobotBus::instance().imu.register_notifier();
+    // [新增] 你这里虽然没有 wait mag notifier，但 copy_if_updated 依赖 gen，注册更稳妥
+    RobotBus::instance().mag.register_notifier();
 
-    ImuData imu_data;
+    ImuData imu_data{};
     uint32_t last_imu_gen = 0;
 
-    // 注意：这里初始化时间建议给个非0值，或者在循环里处理第一次 dt
-    uint64_t last_time_us = esp_timer_get_time();
-
-    MagData mag_data_snapshot;
+    MagData mag_data_snapshot{};
     uint32_t last_mag_gen = 0;
 
     ESP_LOGI(TAG, "Estimator Task Started (FRD).");
@@ -64,6 +63,24 @@ void task_estimator_entry(void* arg)
     static float last_yaw_deg = 0.0f;
     static uint64_t last_yaw_us = 0;
 
+    // =======================
+    // [新增] 时间基 Debug
+    // =======================
+    bool imu_time_inited = false;
+    uint64_t last_imu_time_us = 0;
+
+    bool wall_time_inited = false;
+    uint64_t last_wall_us = 0;
+
+    // =======================
+    // [新增] 统计计数器（跑一段时间看整体健康度）
+    // =======================
+    uint32_t cnt_imu_update = 0;
+    uint32_t cnt_time_backwards = 0;
+    uint32_t cnt_dt_capped = 0;
+    uint32_t cnt_acc_reject = 0;
+    uint32_t cnt_acc_accept = 0;
+
     while (1)
     {
         // 3. 等待通知 (阻塞式，最长等待 100ms)
@@ -72,21 +89,58 @@ void task_estimator_entry(void* arg)
         // 4. 尝试获取最新 IMU 数据
         if (RobotBus::instance().imu.copy_if_updated(imu_data, last_imu_gen))
         {
-            // 计算 dt (秒)
-            uint64_t now_us = imu_data.timestamp_us;
+            cnt_imu_update++;
 
-            // 防御性编程：防止时间倒流或第一次运行 dt 异常
-            if (now_us <= last_time_us)
+            // ==========================================
+            // [新增] dt：同时用 IMU 时间戳与 esp_timer 计算，交叉验证时间基
+            // ==========================================
+            const uint64_t now_imu_us = imu_data.timestamp_us;
+            const uint64_t now_wall_us = esp_timer_get_time();
+
+            float dt_imu = 0.0f;
+            float dt_wall = 0.0f;
+
+            if (!imu_time_inited)
             {
-                last_time_us = now_us;
+                imu_time_inited = true;
+                last_imu_time_us = now_imu_us;
+                // 第一次先不做 EKF 更新（避免 dt 异常）
                 continue;
             }
+            else
+            {
+                if (now_imu_us <= last_imu_time_us)
+                {
+                    cnt_time_backwards++;
+                    last_imu_time_us = now_imu_us;
+                    continue;
+                }
+                dt_imu = (now_imu_us - last_imu_time_us) * 1e-6f;
+                last_imu_time_us = now_imu_us;
+            }
 
-            float dt = (now_us - last_time_us) / 1000000.0f;
-            last_time_us = now_us;
+            if (!wall_time_inited)
+            {
+                wall_time_inited = true;
+                last_wall_us = now_wall_us;
+            }
+            else
+            {
+                if (now_wall_us > last_wall_us)
+                {
+                    dt_wall = (now_wall_us - last_wall_us) * 1e-6f;
+                }
+                last_wall_us = now_wall_us;
+            }
+
+            float dt = dt_imu;
 
             // 限制 dt 最大值，防止断点调试或掉帧后积分爆炸
-            if (dt > 0.1f) dt = 0.005f; // 默认给一个 200Hz 的时间步长
+            if (dt > 0.1f)
+            {
+                cnt_dt_capped++;
+                dt = 0.005f; // 默认给一个 200Hz 的时间步长
+            }
 
             // ==========================================
             // 坐标系说明
@@ -114,10 +168,16 @@ void task_estimator_entry(void* arg)
 
             // 融合判断
             float acc_norm = accel.norm();
-            // 门限: 0.5g ~ 1.5g (约 5.0 ~ 15.0 m/s^2)
-            if (acc_norm > 5.0f && acc_norm < 15.0f)
+            bool acc_gate_ok = (acc_norm > 5.0f && acc_norm < 15.0f);
+
+            if (acc_gate_ok)
             {
+                cnt_acc_accept++;
                 ekf.fuse_accel(accel);
+            }
+            else
+            {
+                cnt_acc_reject++;
             }
 
             // --- C. 磁力计处理 ---
@@ -160,17 +220,17 @@ void task_estimator_entry(void* arg)
             {
                 dbg_inited = true;
                 last_yaw_deg = att.yaw;
-                last_yaw_us = now_us;
+                last_yaw_us = now_imu_us;
             }
             else
             {
-                float dt_yaw = (now_us - last_yaw_us) * 1e-6f;
+                float dt_yaw = (now_imu_us - last_yaw_us) * 1e-6f;
                 if (dt_yaw > 1e-4f && dt_yaw < 0.2f)
                 {
                     yaw_rate_deg_s = delta_deg(att.yaw, last_yaw_deg) / dt_yaw;
                 }
                 last_yaw_deg = att.yaw;
-                last_yaw_us = now_us;
+                last_yaw_us = now_imu_us;
             }
 
             // 2) 读取 EKF 内部估计的 gyro bias，并构造 omega
@@ -194,6 +254,9 @@ void task_estimator_entry(void* arg)
             {
                 last_print_us = now_print_us;
 
+                // [新增] 时间基健康度：dt_imu 与 dt_wall 的偏差（wall_time_inited 后才有意义）
+                float dt_diff = (dt_wall > 0.0f) ? (dt_imu - dt_wall) : 0.0f;
+
                 ESP_LOGI(TAG,
                     "Euler(deg) R:%7.2f P:%7.2f Y:%7.2f | Ydot:%7.2f deg/s | dt:%7.4f | horiz:%6.3f%s",
                     att.roll, att.pitch, att.yaw,
@@ -201,11 +264,31 @@ void task_estimator_entry(void* arg)
                     near_singularity ? " [GIMBAL_LOCK_ZONE]" : "");
 
                 ESP_LOGI(TAG,
-                    "Gyro(rad/s) [%.5f %.5f %.5f] | Bias [%.5f %.5f %.5f] | Omega [%.5f %.5f %.5f] | AccNorm:%5.2f AccZ:%6.2f",
+                    "Gyro(rad/s) [%.5f %.5f %.5f] | Bias [%.5f %.5f %.5f] | Omega [%.5f %.5f %.5f]",
                     gyro.x(), gyro.y(), gyro.z(),
                     bias.x(), bias.y(), bias.z(),
-                    omega.x(), omega.y(), omega.z(),
-                    acc_norm, accel.z());
+                    omega.x(), omega.y(), omega.z());
+
+                // [新增] accel 原始/取反/门限
+                ESP_LOGI(TAG,
+                    "AccelRaw(FRD) [%.2f %.2f %.2f] | AccUsed(-raw) [%.2f %.2f %.2f] | AccNorm:%5.2f | Gate:%s | AccZ:%6.2f",
+                    imu_data.ax, imu_data.ay, imu_data.az,
+                    accel.x(), accel.y(), accel.z(),
+                    acc_norm, acc_gate_ok ? "OK" : "REJ",
+                    accel.z());
+
+                // [新增] 时间戳对齐与统计
+                ESP_LOGI(TAG,
+                    "Time dt_imu:%0.4f dt_wall:%0.4f diff:%+0.4f | cnt: imu=%u back=%u cap=%u acc_ok=%u acc_rej=%u",
+                    dt_imu, dt_wall, dt_diff,
+                    (unsigned)cnt_imu_update,
+                    (unsigned)cnt_time_backwards,
+                    (unsigned)cnt_dt_capped,
+                    (unsigned)cnt_acc_accept,
+                    (unsigned)cnt_acc_reject);
+
+                // [新增] 可选：若你想顺手观察磁力计（即使不融合）
+                // ESP_LOGI(TAG, "Mag(FRD) [%.3f %.3f %.3f]", mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z);
             }
         }
     }
