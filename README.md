@@ -53,6 +53,35 @@
 
 > 注意：固件内部已包含 **Sensor Frame → Body Frame** 的映射层。请根据 `task_sensor.cpp` 中的配置确保传感器安装方向与机体坐标系对齐。
 
+### 🐛 调试输出控制 (Debug Log Control) [NEW]
+
+项目提供了灵活的调试输出控制系统，可通过宏定义精确控制各模块的打印输出：
+
+**控制文件**：`components/common/include/debug_log.hpp`
+
+**主要功能**：
+- **全局开关**：`DEBUG_LOG_GLOBAL_ENABLE` - 一键关闭所有调试输出
+- **模块化控制**：针对传感器任务和姿态估计任务的独立开关
+- **分类打印**：IMU、磁力计、气压计、欧拉角、陀螺仪、加速度计等分类控制
+- **频率调节**：可配置打印间隔，避免高频输出影响性能
+
+**使用示例**：
+
+```cpp
+// 关闭所有调试输出（生产环境）
+#define DEBUG_LOG_GLOBAL_ENABLE 0
+
+// 只关闭 IMU 数据打印，保留其他
+#define DEBUG_SENSOR_IMU 0
+
+// 关闭估计器的统计信息
+#define DEBUG_ESTIMATOR_STATISTICS 0
+```
+
+**适用模块**：
+- **传感器任务** (`task_sensor.cpp`)：IMU、磁力计、气压计、I2C 扫描、校准参数
+- **姿态估计任务** (`task_estimator.cpp`)：欧拉角、陀螺仪、加速度计、零偏、时间戳、统计计数器
+
 ### 🔌 硬件规格 (Hardware Spec)
 
 | 组件 | 型号 | 接口 | 频率 (ODR) | 备注 |
@@ -86,7 +115,7 @@ EspCortex/
 ├── CMakeLists.txt          # 项目构建脚本
 ├── data/                   # 前端网页资源 (HTML/JS/CSS) -> 烧录至 SPIFFS
 ├── components/             # 独立驱动组件库
-│   ├── common/             # 通用类型定义 (shared_types.h)
+│   ├── common/             # 通用类型定义与调试控制 (shared_types.h, debug_log.hpp)
 │   ├── ekf/                # EKF 数学核心库 (含 fuse_accel/fuse_mag 实现)
 │   ├── web_server/         # HTTP/WebSocket 服务器
 │   ├── wifi_manager/       # WiFi 连接管理
@@ -150,6 +179,12 @@ idf.py flash
 ---
 
 ## 📅 开发日志 (Changelog)
+
+### Debug System & Output Optimization (Latest)
+
+- **Debug Control System**：新增统一的调试输出控制系统（`debug_log.hpp`），支持通过宏定义灵活控制各模块打印输出
+- **Modular Logging**：传感器任务和姿态估计任务的打印输出按类别分离（IMU、磁力计、气压计、欧拉角、陀螺仪等）
+- **Performance**：可配置打印频率，避免高频输出影响实时性能；一键关闭所有调试输出用于生产环境
 
 ### AHRS Complete & FRD Transition (Current)
 
