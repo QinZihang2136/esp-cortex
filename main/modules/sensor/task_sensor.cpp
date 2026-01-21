@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "param_registry.hpp" // [必须] 引入参数系统
+#include "debug_log.hpp"       // 调试打印控制 (来自 common 组件)
 // 引入所有硬件驱动
 #include "board_config.h"
 #include "robot_bus.hpp"
@@ -11,11 +12,12 @@
 #include "i2c_bus.h"
 #include "icm42688.h"
 #include "qmc5883l.h"
-#include "icp20100.h" 
+#include "icp20100.h"
 #include "lps22hh.h" // [新增] 引入 LPS22HH 驱动头文件
 #include <math.h> // [必须] 引入 math.h 用于 pow() 函数
 
 static const char* TAG = "TASK_SENSOR";
+DEBUG_SENSOR_INIT(TAG)
 
 // --- 静态硬件对象 ---
 static SPIBus spi_bus(SPI2_HOST);
@@ -128,7 +130,7 @@ static void task_sensor_entry(void* arg)
     ESP_LOGI(TAG, "Sensor Params Loaded.");
 
     // ================== I2C 扫描器 ==================
-    ESP_LOGW(TAG, ">>> 开始 I2C 总线扫描 <<<");
+    DEBUG_SENSOR_I2C_SCAN_LOG(">>> 开始 I2C 总线扫描 <<<");
     int devices_found = 0;
     for (int addr = 1; addr < 127; addr++)
     {
@@ -142,17 +144,17 @@ static void task_sensor_entry(void* arg)
 
         if (ret == ESP_OK)
         {
-            ESP_LOGI(TAG, "发现 I2C 设备: 0x%02X", addr);
+            DEBUG_SENSOR_I2C_SCAN_LOG("发现 I2C 设备: 0x%02X", addr);
             devices_found++;
-            if (addr == 0x0D) ESP_LOGI(TAG, "  -> 可能是 QMC5883L");
-            if (addr == 0x63) ESP_LOGI(TAG, "  -> 可能是 ICP-20100 (ADO=GND)");
-            if (addr == 0x64) ESP_LOGI(TAG, "  -> 可能是 ICP-20100 (ADO=High)");
-            if (addr == 0x5C) ESP_LOGI(TAG, "  -> 可能是 LPS22HH (SA0=GND)");
-            if (addr == 0x5D) ESP_LOGI(TAG, "  -> 可能是 LPS22HH (SA0=VCC)");
+            if (addr == 0x0D) DEBUG_SENSOR_I2C_SCAN_LOG("  -> 可能是 QMC5883L");
+            if (addr == 0x63) DEBUG_SENSOR_I2C_SCAN_LOG("  -> 可能是 ICP-20100 (ADO=GND)");
+            if (addr == 0x64) DEBUG_SENSOR_I2C_SCAN_LOG("  -> 可能是 ICP-20100 (ADO=High)");
+            if (addr == 0x5C) DEBUG_SENSOR_I2C_SCAN_LOG("  -> 可能是 LPS22HH (SA0=GND)");
+            if (addr == 0x5D) DEBUG_SENSOR_I2C_SCAN_LOG("  -> 可能是 LPS22HH (SA0=VCC)");
         }
     }
     if (devices_found == 0) ESP_LOGE(TAG, "未发现任何 I2C 设备！");
-    ESP_LOGW(TAG, ">>> 扫描结束，共 %d 个设备 <<<", devices_found);
+    DEBUG_SENSOR_I2C_SCAN_LOG(">>> 扫描结束，共 %d 个设备 <<<", devices_found);
 
     // 初始化磁力计
     if (mag.begin() != ESP_OK) ESP_LOGE(TAG, "Mag Init Failed");
@@ -274,13 +276,16 @@ static void task_sensor_entry(void* arg)
                 if (ret == ESP_OK) bus.baro.publish(baro_data);
             }
 
-            // 调试打印 (1秒一次)
-            if (tick_counter % 200 == 0)
+            // 调试打印 (由 DEBUG_SENSOR_PRINT_INTERVAL 控制频率)
+            if (tick_counter % DEBUG_SENSOR_PRINT_INTERVAL == 0)
             {
                 float alt = calculate_altitude(baro_data.pressure);
-                ESP_LOGI(TAG, "IMU(FRD): %.2f %.2f %.2f | Mag: %.2f %.2f %.2f | Alt: %.1fm",
-                    imu_data.ax, imu_data.ay, imu_data.az,
-                    mag_data.x, mag_data.y, mag_data.z, alt);
+                DEBUG_SENSOR_IMU_LOG("IMU(FRD): ax=%.2f ay=%.2f az=%.2f",
+                    imu_data.ax, imu_data.ay, imu_data.az);
+                DEBUG_SENSOR_MAG_LOG("Mag(FRD): x=%.2f y=%.2f z=%.2f",
+                    mag_data.x, mag_data.y, mag_data.z);
+                DEBUG_SENSOR_BARO_LOG("Baro: pressure=%.2fkPa temp=%.1f°C alt=%.1fm",
+                    baro_data.pressure, baro_data.temperature, alt);
             }
 
             tick_counter++;

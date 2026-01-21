@@ -5,9 +5,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
+#include "debug_log.hpp"    // 调试打印控制 (来自 common 组件)
 #include <cmath>
 
 static const char* TAG = "ESTIMATOR";
+DEBUG_ESTIMATOR_INIT(TAG)
 
 // 角度单位换算（仅用于输出）
 // 注意：当前 imu_data.gx/gy/gz 已经是 rad/s（你已取消再次转弧度），不要再乘 DEG_TO_RAD。
@@ -54,7 +56,7 @@ void task_estimator_entry(void* arg)
     MagData mag_data_snapshot{};
     uint32_t last_mag_gen = 0;
 
-    ESP_LOGI(TAG, "Estimator Task Started (FRD).");
+    DEBUG_ESTIMATOR_LOG("Estimator Task Started (FRD).");
 
     // =======================
     // [新增] Debug 状态缓存
@@ -248,7 +250,7 @@ void task_estimator_entry(void* arg)
             //    - Pitch 接近 90°：5Hz，抓取欧拉角跳变的现场
             static uint64_t last_print_us = 0;
             uint64_t now_print_us = esp_timer_get_time();
-            uint64_t period_us = near_singularity ? 200000 : 1000000;
+            uint64_t period_us = near_singularity ? DEBUG_ESTIMATOR_PRINT_INTERVAL_FAST : DEBUG_ESTIMATOR_PRINT_INTERVAL_NORMAL;
 
             if (now_print_us - last_print_us > period_us)
             {
@@ -257,20 +259,20 @@ void task_estimator_entry(void* arg)
                 // [新增] 时间基健康度：dt_imu 与 dt_wall 的偏差（wall_time_inited 后才有意义）
                 float dt_diff = (dt_wall > 0.0f) ? (dt_imu - dt_wall) : 0.0f;
 
-                ESP_LOGI(TAG,
+                DEBUG_ESTIMATOR_EULER_LOG(
                     "Euler(deg) R:%7.2f P:%7.2f Y:%7.2f | Ydot:%7.2f deg/s | dt:%7.4f | horiz:%6.3f%s",
                     att.roll, att.pitch, att.yaw,
                     yaw_rate_deg_s, dt, horiz,
                     near_singularity ? " [GIMBAL_LOCK_ZONE]" : "");
 
-                ESP_LOGI(TAG,
+                DEBUG_ESTIMATOR_GYRO_LOG(
                     "Gyro(rad/s) [%.5f %.5f %.5f] | Bias [%.5f %.5f %.5f] | Omega [%.5f %.5f %.5f]",
                     gyro.x(), gyro.y(), gyro.z(),
                     bias.x(), bias.y(), bias.z(),
                     omega.x(), omega.y(), omega.z());
 
                 // [新增] accel 原始/取反/门限
-                ESP_LOGI(TAG,
+                DEBUG_ESTIMATOR_ACCEL_LOG(
                     "AccelRaw(FRD) [%.2f %.2f %.2f] | AccUsed(-raw) [%.2f %.2f %.2f] | AccNorm:%5.2f | Gate:%s | AccZ:%6.2f",
                     imu_data.ax, imu_data.ay, imu_data.az,
                     accel.x(), accel.y(), accel.z(),
@@ -278,9 +280,12 @@ void task_estimator_entry(void* arg)
                     accel.z());
 
                 // [新增] 时间戳对齐与统计
-                ESP_LOGI(TAG,
-                    "Time dt_imu:%0.4f dt_wall:%0.4f diff:%+0.4f | cnt: imu=%u back=%u cap=%u acc_ok=%u acc_rej=%u",
-                    dt_imu, dt_wall, dt_diff,
+                DEBUG_ESTIMATOR_TIME_LOG(
+                    "Time dt_imu:%0.4f dt_wall:%0.4f diff:%+0.4f",
+                    dt_imu, dt_wall, dt_diff);
+
+                DEBUG_ESTIMATOR_STATISTICS_LOG(
+                    "Stats imu=%u back=%u cap=%u acc_ok=%u acc_rej=%u",
                     (unsigned)cnt_imu_update,
                     (unsigned)cnt_time_backwards,
                     (unsigned)cnt_dt_capped,
@@ -288,7 +293,7 @@ void task_estimator_entry(void* arg)
                     (unsigned)cnt_acc_reject);
 
                 // [新增] 可选：若你想顺手观察磁力计（即使不融合）
-                // ESP_LOGI(TAG, "Mag(FRD) [%.3f %.3f %.3f]", mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z);
+                DEBUG_ESTIMATOR_MAG_LOG("Mag(FRD) [%.3f %.3f %.3f]", mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z);
             }
         }
     }
