@@ -148,11 +148,12 @@ window.switchCalibTab = function (type) {
 
 // ================= 3. 核心数据处理 (路由分发) =================
 function handleDataPacket(jsonObj) {
-    const type = jsonObj.type;
-    const payload = jsonObj.payload;
+    try {
+        const type = jsonObj.type;
+        const payload = jsonObj.payload;
 
-    // 1. 遥测数据 (Telemetry)
-    if (type === "telem") {
+        // 1. 遥测数据 (Telemetry)
+        if (type === "telem") {
         // 更新姿态数值
         if (document.getElementById("val-bat")) document.getElementById("val-bat").innerText = payload.voltage.toFixed(1) + " V";
         if (document.getElementById("val-pitch")) document.getElementById("val-pitch").innerText = payload.pitch.toFixed(1) + "°";
@@ -179,6 +180,89 @@ function handleDataPacket(jsonObj) {
         // 更新 3D 模型
         if (currentDashMode === '3d') {
             update3DObject(payload.roll, payload.pitch, payload.yaw);
+        }
+
+        // 更新EKF调试面板
+        if (payload.ekf) {
+            const ekf = payload.ekf;
+
+            // 安全检查：确保数据有效
+            if (!isNaN(ekf.yaw_measured) && isFinite(ekf.yaw_measured)) {
+                const elem = document.getElementById("ekf-yaw-measured");
+                if (elem) elem.innerText = ekf.yaw_measured.toFixed(1) + "°";
+            }
+            if (!isNaN(ekf.yaw_predicted) && isFinite(ekf.yaw_predicted)) {
+                const elem = document.getElementById("ekf-yaw-predicted");
+                if (elem) elem.innerText = ekf.yaw_predicted.toFixed(1) + "°";
+            }
+
+            // 更新残差
+            const residualDeg = ekf.yaw_residual * 180.0 / Math.PI;
+            const residualElem = document.getElementById("ekf-yaw-residual");
+            if (residualElem && !isNaN(residualDeg) && isFinite(residualDeg)) {
+                residualElem.innerText = residualDeg.toFixed(2) + "°";
+
+                // 残差过大时标红
+                if (Math.abs(residualDeg) > 5.0) {
+                    residualElem.className = "h5 mb-0 text-danger";
+                } else if (Math.abs(residualDeg) > 2.0) {
+                    residualElem.className = "h5 mb-0 text-warning";
+                } else {
+                    residualElem.className = "h5 mb-0 text-success";
+                }
+            }
+
+            // 更新零偏显示
+            if (document.getElementById("ekf-bias") && ekf.bias) {
+                document.getElementById("ekf-bias").innerHTML =
+                    `X: ${ekf.bias.x.toFixed(5)}<br>` +
+                    `Y: ${ekf.bias.y.toFixed(5)}<br>` +
+                    `Z: ${ekf.bias.z.toFixed(5)}`;
+            }
+
+            // 融合状态徽章
+            const accelBadge = document.getElementById("ekf-accel-used");
+            if (accelBadge) {
+                accelBadge.className = ekf.accel_used ?
+                    "badge bg-success" : "badge bg-secondary";
+                accelBadge.innerText = ekf.accel_used ? "融合中" : "待机";
+            }
+
+            const magBadge = document.getElementById("ekf-mag-used");
+            if (magBadge) {
+                magBadge.className = ekf.mag_used ?
+                    "badge bg-success" : "badge bg-secondary";
+                magBadge.innerText = ekf.mag_used ? "融合中" : "待机";
+            }
+
+            // 协方差
+            if (document.getElementById("ekf-p-yaw") && !isNaN(ekf.P_yaw) && isFinite(ekf.P_yaw)) {
+                document.getElementById("ekf-p-yaw").innerText = ekf.P_yaw.toFixed(6);
+            }
+
+            // 卡尔曼增益
+            if (document.getElementById("ekf-k-yaw-bias-z") && ekf.k_yaw_bias_z !== undefined) {
+                document.getElementById("ekf-k-yaw-bias-z").innerText =
+                    ekf.k_yaw_bias_z.toFixed(6);
+            }
+
+            // 异常警告逻辑
+            const statusBadge = document.getElementById("ekf-status");
+            if (statusBadge) {
+                const residualAbs = Math.abs(residualDeg);
+                const pYaw = ekf.P_yaw;
+
+                if (residualAbs > 10.0 || pYaw > 1.0) {
+                    statusBadge.className = "badge bg-danger";
+                    statusBadge.innerText = "严重异常";
+                } else if (residualAbs > 5.0 || pYaw > 0.1) {
+                    statusBadge.className = "badge bg-warning";
+                    statusBadge.innerText = "警告";
+                } else {
+                    statusBadge.className = "badge bg-success";
+                    statusBadge.innerText = "正常";
+                }
+            }
         }
 
         // --- 磁力计数据处理 ---
@@ -228,8 +312,8 @@ function handleDataPacket(jsonObj) {
             }
 
             // [New] 驱动原始数据监控页面 (Monitor)
-            // 这里调用我们新写的更新函数，传入 imu 和 mag
-            updateMonitor(payload.imu, payload.mag);
+            // 这里调用我们新写的更新函数，传入 imu、mag 和 ekf
+            updateMonitor(payload.imu, payload.mag, payload.ekf);
         }
     }
     // 2. 参数列表
@@ -241,6 +325,10 @@ function handleDataPacket(jsonObj) {
     // 3. 系统日志
     else if (type === "log") {
         logToTerminal("[ESP] " + payload.msg);
+    }
+    } catch (error) {
+        console.error("Error in handleDataPacket:", error);
+        console.error("Data packet:", jsonObj);
     }
 }
 // ================= 4. 图表功能 (Chart.js) =================
@@ -1549,8 +1637,7 @@ window.resetGyroIntegration = function () {
 };
 
 // --- 核心更新逻辑 (在 handleDataPacket 中调用) ---
-// --- 核心更新逻辑 (在 handleDataPacket 中调用) ---
-function updateMonitor(imu, mag) {
+function updateMonitor(imu, mag, ekf) {
     if (!monitorInited || document.getElementById('view-monitor').style.display === 'none') return;
 
     // 1. 更新数值仪表盘 (保持不变)
@@ -1584,6 +1671,37 @@ function updateMonitor(imu, mag) {
         const vMag = new THREE.Vector3(mag.y, -mag.z, mag.x).normalize();
         vecArrowMag.setDirection(vMag);
         vecArrowMag.setLength(1.5);
+    }
+
+    // 更新航向箭头 (EKF调试)
+    if (ekf && ekf.mag_world &&
+        !isNaN(ekf.yaw_predicted) && isFinite(ekf.yaw_predicted)) {
+
+        // 实测航向：世界坐标系的磁场向量投影到水平面
+        // 注意：Three.js坐标系 vs FRD坐标系需要映射
+        const magWorld = new THREE.Vector3(
+            ekf.mag_world.y,
+            0,  // 投影到水平面，Y=0
+            ekf.mag_world.x
+        ).normalize();
+
+        if (vecArrowYawMeasured && magWorld.length() > 0) {
+            vecArrowYawMeasured.setDirection(magWorld);
+            vecArrowYawMeasured.setLength(1.5);
+        }
+
+        // 预测航向：从当前姿态四元数推导
+        const yawPred = ekf.yaw_predicted * Math.PI / 180.0;
+        const yawVec = new THREE.Vector3(
+            Math.cos(yawPred),
+            0,
+            Math.sin(yawPred)
+        ).normalize();
+
+        if (vecArrowYawPredicted && yawVec.length() > 0) {
+            vecArrowYawPredicted.setDirection(yawVec);
+            vecArrowYawPredicted.setLength(1.5);
+        }
     }
 
     // =========================================================
@@ -1689,6 +1807,24 @@ function initVectorScene() {
     // Mag 箭头 (红)
     vecArrowMag = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), origin, 1.5, 0xdc3545);
     vecScene.add(vecArrowMag);
+
+    // 实测航向箭头 (红色，水平面)
+    vecArrowYawMeasured = new THREE.ArrowHelper(
+        new THREE.Vector3(1, 0, 0),  // 初始指向X轴
+        origin,                      // 原点
+        1.5,                         // 长度
+        0xdc3545                     // 红色 Bootstrap danger
+    );
+    vecScene.add(vecArrowYawMeasured);
+
+    // 预测航向箭头 (青色，水平面)
+    vecArrowYawPredicted = new THREE.ArrowHelper(
+        new THREE.Vector3(1, 0, 0),
+        origin,
+        1.5,
+        0x0dcaf0                     // 青色 Bootstrap info
+    );
+    vecScene.add(vecArrowYawPredicted);
 }
 
 function initAttitudeScene() {

@@ -19,7 +19,7 @@ static float to_deg(float rad)
 void task_telemetry_entry(void* arg)
 {
     // 准备一个足够大的缓冲区来存放 JSON 字符串
-    char json_buffer[512];
+    char json_buffer[1024];  // 增大到1024字节以容纳EKF调试数据
     auto& bus = RobotBus::instance();
 
     ESP_LOGI(TAG, "Telemetry Task Started. Broadcasting to Web...");
@@ -37,6 +37,9 @@ void task_telemetry_entry(void* arg)
 
         // [新增] 获取 EKF 发布的姿态数据 (已在 Estimator 任务中解算好)
         AttitudeData att = bus.attitude.get();
+
+        // [新增] 获取EKF调试数据
+        EKFDebugData ekf_dbg = bus.ekf_debug.get();
 
         // 3. 姿态解算 (Attitude Estimation)
         // [修改] 现在直接使用 EKF 的结果，不再手动计算
@@ -81,21 +84,67 @@ void task_telemetry_entry(void* arg)
 
         // 6. 打包 JSON
         // 格式必须严格匹配 app.js 中的 handleDataPacket
+
+        // [安全检查] 确保EKF调试数据有效
+        float yaw_meas_deg = 0.0f;
+        float yaw_pred_deg = 0.0f;
+        float yaw_res = 0.0f;
+        float bias_x = 0.0f, bias_y = 0.0f, bias_z = 0.0f;
+        float k_yaw_bias = 0.0f;
+        int accel_used = 0;
+        int mag_used = 0;
+        float mag_wx = 0.0f, mag_wy = 0.0f, mag_wz = 0.0f;
+        float p_yaw = 0.01f;
+
+        // 只有当EKF数据有效时才使用（timestamp_us > 0 表示已初始化）
+        if (ekf_dbg.timestamp_us > 0) {
+            yaw_meas_deg = to_deg(ekf_dbg.yaw_measured);
+            yaw_pred_deg = to_deg(ekf_dbg.yaw_predicted);
+            yaw_res = ekf_dbg.yaw_residual;
+            bias_x = ekf_dbg.gyro_bias_x;
+            bias_y = ekf_dbg.gyro_bias_y;
+            bias_z = ekf_dbg.gyro_bias_z;
+            k_yaw_bias = ekf_dbg.k_yaw_bias_z;
+            accel_used = ekf_dbg.accel_used ? 1 : 0;
+            mag_used = ekf_dbg.mag_used ? 1 : 0;
+            mag_wx = ekf_dbg.mag_world_x;
+            mag_wy = ekf_dbg.mag_world_y;
+            mag_wz = ekf_dbg.mag_world_z;
+            p_yaw = ekf_dbg.P_yaw;
+        }
+
         int len = snprintf(json_buffer, sizeof(json_buffer),
             "{\"type\":\"telem\",\"payload\":{"
             "\"roll\":%.2f,\"pitch\":%.2f,\"yaw\":%.2f,"
             "\"voltage\":%.2f,"
             "\"sys\":{\"heap\":%.1f,\"time\":%lu},"
             "\"mag\":{\"x\":%.2f,\"y\":%.2f,\"z\":%.2f},"
-            // [新增] 必须把 IMU 数据发给前端用于校准
-            "\"imu\":{\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f}"
+            "\"imu\":{\"ax\":%.3f,\"ay\":%.3f,\"az\":%.3f,\"gx\":%.3f,\"gy\":%.3f,\"gz\":%.3f},"
+            "\"ekf\":{"
+                "\"yaw_measured\":%.2f,\"yaw_predicted\":%.2f,\"yaw_residual\":%.4f,"
+                "\"bias\":{\"x\":%.5f,\"y\":%.5f,\"z\":%.5f},"
+                "\"k_yaw_bias_z\":%.6f,"
+                "\"accel_used\":%d,\"mag_used\":%d,"
+                "\"mag_world\":{\"x\":%.3f,\"y\":%.3f,\"z\":%.3f},"
+                "\"P_yaw\":%.6f"
+            "}"
             "}}",
             roll, pitch, yaw, voltage,
             free_heap_kb, (unsigned long)uptime_sec,
             mag.x, mag.y, mag.z,
-            // 填入 IMU 数据
-            imu.ax, imu.ay, imu.az, imu.gx, imu.gy, imu.gz
+            imu.ax, imu.ay, imu.az, imu.gx, imu.gy, imu.gz,
+            yaw_meas_deg, yaw_pred_deg, yaw_res,
+            bias_x, bias_y, bias_z,
+            k_yaw_bias,
+            accel_used, mag_used,
+            mag_wx, mag_wy, mag_wz,
+            p_yaw
         );
+
+        // [调试] 检查buffer是否溢出
+        if (len >= sizeof(json_buffer)) {
+            ESP_LOGE(TAG, "JSON buffer overflow! Needed %d, have %zu", len, sizeof(json_buffer));
+        }
 
         // 7. 发送给 Web 端
         // 只要 buffer 没溢出，就发送

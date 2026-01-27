@@ -198,6 +198,60 @@
                         </div>
                     </div>
 
+                    <!-- EKF调试信息卡片 -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-12">
+                            <div class="card shadow-sm">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <strong><i class="fas fa-chart-line me-2"></i>EKF融合状态</strong>
+                                    <span class="badge bg-primary" id="ekf-status">正常</span>
+                                </div>
+                                <div class="card-body">
+                                    <div class="row">
+                                        <div class="col-md-3">
+                                            <small class="text-muted">磁力计实测航向</small>
+                                            <h5 class="mb-0" id="ekf-yaw-measured">0.0°</h5>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">姿态预测航向</small>
+                                            <h5 class="mb-0" id="ekf-yaw-predicted">0.0°</h5>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">航向残差</small>
+                                            <h5 class="mb-0 text-warning" id="ekf-yaw-residual">0.00°</h5>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">零偏 (rad/s)</small>
+                                            <div class="small text-muted" id="ekf-bias">
+                                                X: 0.00000<br>
+                                                Y: 0.00000<br>
+                                                Z: 0.00000
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="row mt-3">
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Accel融合</small>
+                                            <span class="badge bg-secondary" id="ekf-accel-used">待机</span>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Mag融合</small>
+                                            <span class="badge bg-secondary" id="ekf-mag-used">待机</span>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">Yaw不确定性 (P)</small>
+                                            <span class="small font-monospace" id="ekf-p-yaw">0.000000</span>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <small class="text-muted">卡尔曼增益 K(yaw,bias_z)</small>
+                                            <span class="small font-monospace" id="ekf-k-yaw-bias-z">0.000000</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="d-flex justify-content-center mb-3">
                         <div class="btn-group" role="group">
                             <input type="radio" class="btn-check" name="dashView" id="btn-check-chart"

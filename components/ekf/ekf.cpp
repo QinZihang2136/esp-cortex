@@ -320,12 +320,23 @@ void EspEKF::fuse_mag(const Vector3f& mag_meas)
     // NED: yaw = atan2(E, N) = atan2(y, x)
     float yaw_measured = atan2f(m_world.y(), m_world.x());
 
-    float yaw_residual = normalize_angle(yaw_measured);
+    // [修复] 从当前姿态四元数提取预测的yaw角度
+    float qw = state.q.w();
+    float qx = state.q.x();
+    float qy = state.q.y();
+    float qz = state.q.z();
+    float yaw_predicted = atan2f(2.0f * (qw * qz + qx * qy), 1.0f - 2.0f * (qy * qy + qz * qz));
+
+    // [关键修复] 残差 = 测量值 - 预测值（而不是测量值 - 0）
+    float yaw_residual = normalize_angle(yaw_measured - yaw_predicted);
 
     // debug
     mag_dbg_.used = true;
     mag_dbg_.yaw_measured = yaw_measured;
+    mag_dbg_.yaw_predicted = yaw_predicted;
     mag_dbg_.yaw_residual = yaw_residual;
+    mag_dbg_.m_world = m_world;  // 保存世界坐标磁场向量
+    mag_dbg_.m_body = m_body;    // 保存机体坐标磁场向量
 
     // 4. 构建雅可比矩阵 H (1x6)
     // [Math] H = [0, 0, 1, 0, 0, 0]
@@ -350,6 +361,9 @@ void EspEKF::fuse_mag(const Vector3f& mag_meas)
     K(4) = 0.0f; // bias_y
     // K(2) yaw 保留
     // K(5) bias_z 保留（磁力计可以帮助约束 yaw 漂移，间接抑制 z-bias）
+
+    // 保存卡尔曼增益（用于调试）
+    last_mag_k_yaw_bias_z = K(5);
 
     // 6. 计算误差状态 delta_x
     Eigen::Matrix<float, DIM_ERR, 1> delta_x = K * yaw_residual;

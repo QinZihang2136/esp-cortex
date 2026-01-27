@@ -67,7 +67,10 @@ public:
         bool used = false;
         float mag_norm = 0.0f;
         float yaw_measured = 0.0f;
+        float yaw_predicted = 0.0f;
         float yaw_residual = 0.0f;
+        Vector3f m_world;       // 新增：世界坐标系的磁场向量
+        Vector3f m_body;        // 新增：机体坐标系的磁场向量
         Vector3f dtheta = Vector3f::Zero();
         Vector3f dbias = Vector3f::Zero();
     };
@@ -83,6 +86,8 @@ public:
     // --- Getter ---
     Vector3f get_euler_angles();
     Vector3f get_gyro_bias();
+    float get_P_yaw() const { return P(2, 2); }
+    float get_last_mag_k_yaw_bias_z() const { return last_mag_k_yaw_bias_z; }
 
     // Debug Getter
     AccelDebug get_last_accel_debug() const { return accel_dbg_; }
@@ -115,4 +120,7 @@ private:
     MagDebug   mag_dbg_;
 
     bool is_initialized = false;
+
+private:
+    float last_mag_k_yaw_bias_z = 0.0f;  // 保存最后一次磁力计融合的卡尔曼增益
 };

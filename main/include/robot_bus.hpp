@@ -15,6 +15,7 @@ public:
     Topic<AttitudeData> attitude;  // 姿态数据的白板
     Topic<MagData> mag;
     Topic<BaroData> baro;
+    Topic<EKFDebugData> ekf_debug; // EKF调试数据的白板
 
     // ================= 定义所有的信箱 =================
     CommandQueue<MotionCommand> motion_cmd;  // 运动指令的信箱

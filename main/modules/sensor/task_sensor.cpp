@@ -250,7 +250,7 @@ static void task_sensor_entry(void* arg)
                     mag.readData(&raw_x, &raw_y, &raw_z);
 
                     // 1. 同样的坐标映射 FRD
-                    mag_body_x = raw_y;   // Y -> X
+                    mag_body_x = raw_y;   // Y -> X (与IMU保持一致，无负号)
                     mag_body_y = raw_x;   // X -> Y
                     mag_body_z = -raw_z;  // Z -> -Z
 

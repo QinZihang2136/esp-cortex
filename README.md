@@ -114,6 +114,12 @@
 EspCortex/
 ├── CMakeLists.txt          # 项目构建脚本
 ├── data/                   # 前端网页资源 (HTML/JS/CSS) -> 烧录至 SPIFFS
+├── docs/                   # 📘 详细模块文档 (新增)
+│   ├── sensor.md          # 传感器采集模块文档
+│   ├── ekf.md             # 姿态估计算法模块文档
+│   ├── web_server.md      # Web 服务器与通信模块文档
+│   ├── param_system.md    # 参数管理系统文档
+│   └── development.md     # 开发环境与编译指南
 ├── components/             # 独立驱动组件库
 │   ├── common/             # 通用类型定义与调试控制 (shared_types.h, debug_log.hpp)
 │   ├── ekf/                # EKF 数学核心库 (含 fuse_accel/fuse_mag 实现)
@@ -133,10 +139,34 @@ EspCortex/
 │   │   └── robot_bus.hpp   # DataBus 总线定义
 │   ├── modules/
 │   │   ├── sensor/         # 传感器任务 (坐标映射/校准应用/FRD转换)
-│   │   └── estimator/      # 姿态估算任务 (EKF Predict/Update)
+│   │   ├── estimator/      # 姿态估算任务 (EKF Predict/Update)
+│   │   └── telemetry/      # 遥测任务 (WebSocket 数据推送)
 │   └── main.cpp            # 系统入口
 └── sdkconfig               # ESP-IDF 项目配置
 ```
+
+---
+
+## 📚 详细文档 (Documentation)
+
+本项目提供详细的模块文档，帮助开发者快速了解各模块的原理和使用方法。
+
+### 模块文档
+
+| 文档 | 描述 |
+|------|------|
+| **[传感器采集模块](docs/sensor.md)** | IMU、磁力计、气压计驱动，坐标映射，校准系统 |
+| **[姿态估计模块](docs/ekf.md)** | ES-EKF 算法原理，传感器融合，参数调优 |
+| **[Web 服务器模块](docs/web_server.md)** | HTTP/WebSocket 通信，前端架构，API 接口 |
+| **[参数管理系统](docs/param_system.md)** | NVS 持久化存储，在线调参，参数注册 |
+| **[开发环境指南](docs/development.md)** | 环境搭建，编译烧录，调试技巧 |
+
+### 快速链接
+
+- 🚀 **快速开始**: 查看 [开发环境指南](docs/development.md) 搭建开发环境
+- 📖 **传感器校准**: 参考 [传感器模块文档](docs/sensor.md) 进行六面校准
+- 🔧 **EKF 调优**: 阅读 [姿态估计模块](docs/ekf.md) 调整滤波器参数
+- 🌐 **Web 接口**: 查看 [Web 服务器文档](docs/web_server.md) 了解通信协议
 
 ---
 

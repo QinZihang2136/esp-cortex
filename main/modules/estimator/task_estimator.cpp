@@ -82,6 +82,13 @@ void task_estimator_entry(void* arg)
     uint32_t cnt_dt_capped = 0;
     uint32_t cnt_acc_reject = 0;
     uint32_t cnt_acc_accept = 0;
+    uint32_t cnt_mag_reject = 0;
+    uint32_t cnt_mag_accept = 0;
+
+    // 磁力计融合参数
+    // 地磁场正常范围约 0.25~0.65 Gauss，根据网页端实测值调整
+    const float mag_min_valid = 0.15f;  // 最小有效磁场强度 (Gauss)
+    const float mag_max_valid = 1.0f;   // 最大有效磁场强度 (Gauss)
 
     while (1)
     {
@@ -185,18 +192,27 @@ void task_estimator_entry(void* arg)
             // --- C. 磁力计处理 ---
             if (RobotBus::instance().mag.copy_if_updated(mag_data_snapshot, last_mag_gen))
             {
-                // 目前你还没融合磁力计，因此 yaw 会慢漂是正常现象。
-                // 如果要锁定航向，需要启用 fuse_mag（并处理软硬铁标定与倾角补偿策略）。
-                //
-                // if (mag_data_snapshot.x != 0.0f || mag_data_snapshot.y != 0.0f || mag_data_snapshot.z != 0.0f)
-                // {
-                //     Eigen::Vector3f mag_vec;
-                //     // SensorTask 已做 FRD 映射，这里通常不需要再改符号
-                //     mag_vec.x() = mag_data_snapshot.x;
-                //     mag_vec.y() = mag_data_snapshot.y;
-                //     mag_vec.z() = mag_data_snapshot.z;
-                //     ekf.fuse_mag(mag_vec);
-                // }
+                // 磁力计有效性检查：确保数据在合理范围内
+                float mag_norm = std::sqrt(mag_data_snapshot.x * mag_data_snapshot.x +
+                                          mag_data_snapshot.y * mag_data_snapshot.y +
+                                          mag_data_snapshot.z * mag_data_snapshot.z);
+
+                bool mag_gate_ok = (mag_norm > mag_min_valid && mag_norm < mag_max_valid);
+
+                if (mag_gate_ok)
+                {
+                    cnt_mag_accept++;
+                    Eigen::Vector3f mag_vec;
+                    // SensorTask 已做 FRD 映射，直接使用
+                    mag_vec.x() = mag_data_snapshot.x;
+                    mag_vec.y() = mag_data_snapshot.y;
+                    mag_vec.z() = mag_data_snapshot.z;
+                    ekf.fuse_mag(mag_vec);
+                }
+                else
+                {
+                    cnt_mag_reject++;
+                }
             }
 
             // --- D. 发布姿态 ---
@@ -212,6 +228,42 @@ void task_estimator_entry(void* arg)
             att.yaw = wrap_deg(att.yaw);
 
             RobotBus::instance().attitude.publish(att);
+
+            // ==========================================================
+            // [新增] 发布EKF调试数据
+            // ==========================================================
+            // 获取调试数据
+            auto accel_dbg = ekf.get_last_accel_debug();
+            auto mag_dbg = ekf.get_last_mag_debug();
+
+            EKFDebugData ekf_dbg;
+            ekf_dbg.yaw_measured = mag_dbg.yaw_measured;
+            ekf_dbg.yaw_predicted = mag_dbg.yaw_predicted;
+            ekf_dbg.yaw_residual = mag_dbg.yaw_residual;
+
+            Eigen::Vector3f bias = ekf.get_gyro_bias();
+            ekf_dbg.gyro_bias_x = bias.x();
+            ekf_dbg.gyro_bias_y = bias.y();
+            ekf_dbg.gyro_bias_z = bias.z();
+
+            ekf_dbg.accel_residual_x = accel_dbg.innov.x();
+            ekf_dbg.accel_residual_y = accel_dbg.innov.y();
+            ekf_dbg.accel_residual_z = accel_dbg.innov.z();
+            ekf_dbg.accel_used = accel_dbg.used;
+
+            ekf_dbg.mag_world_x = mag_dbg.m_world.x();
+            ekf_dbg.mag_world_y = mag_dbg.m_world.y();
+            ekf_dbg.mag_world_z = mag_dbg.m_world.z();
+            ekf_dbg.mag_body_x = mag_dbg.m_body.x();
+            ekf_dbg.mag_body_y = mag_dbg.m_body.y();
+            ekf_dbg.mag_body_z = mag_dbg.m_body.z();
+            ekf_dbg.mag_used = mag_dbg.used;
+
+            ekf_dbg.P_yaw = ekf.get_P_yaw();
+            ekf_dbg.k_yaw_bias_z = ekf.get_last_mag_k_yaw_bias_z();
+            ekf_dbg.timestamp_us = now_imu_us;
+
+            RobotBus::instance().ekf_debug.publish(ekf_dbg);
 
             // ==========================================================
             // [新增] 高判定力 Debug 输出
@@ -236,7 +288,7 @@ void task_estimator_entry(void* arg)
             }
 
             // 2) 读取 EKF 内部估计的 gyro bias，并构造 omega
-            Eigen::Vector3f bias = ekf.get_gyro_bias();
+            // bias 已在上面定义，这里直接复用
             Eigen::Vector3f omega = gyro - bias;
 
             // 3) 欧拉角奇异性判据（Pitch 接近 ±90° 时：Yaw/Roll 会变得不稳定，这是数学事实）
@@ -285,12 +337,14 @@ void task_estimator_entry(void* arg)
                     dt_imu, dt_wall, dt_diff);
 
                 DEBUG_ESTIMATOR_STATISTICS_LOG(
-                    "Stats imu=%u back=%u cap=%u acc_ok=%u acc_rej=%u",
+                    "Stats imu=%u back=%u cap=%u acc_ok=%u acc_rej=%u mag_ok=%u mag_rej=%u",
                     (unsigned)cnt_imu_update,
                     (unsigned)cnt_time_backwards,
                     (unsigned)cnt_dt_capped,
                     (unsigned)cnt_acc_accept,
-                    (unsigned)cnt_acc_reject);
+                    (unsigned)cnt_acc_reject,
+                    (unsigned)cnt_mag_accept,
+                    (unsigned)cnt_mag_reject);
 
                 // [新增] 可选：若你想顺手观察磁力计（即使不融合）
                 DEBUG_ESTIMATOR_MAG_LOG("Mag(FRD) [%.3f %.3f %.3f]", mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z);

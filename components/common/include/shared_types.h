@@ -29,13 +29,50 @@ struct BaroData
 };
 
 // 姿态解算结果
-// 这是经过数学计算后，机器人的“身体姿态”
+// 这是经过数学计算后，机器人的"身体姿态"
 struct AttitudeData
 {
     float roll;  // 横滚角 (左右倾斜)
     float pitch; // 俯仰角 (前后倾斜)
     float yaw;   // 偏航角 (车头朝向)
     // 后面如果你学深了，还可以加四元数 float q[4];
+};
+
+// EKF调试数据 (用于网页端可视化)
+struct EKFDebugData
+{
+    // 姿态相关
+    float yaw_measured;      // 磁力计实测航向 (rad)
+    float yaw_predicted;     // 当前姿态预测航向 (rad)
+    float yaw_residual;      // 残差 (rad)
+
+    // 陀螺仪零偏估计
+    float gyro_bias_x;
+    float gyro_bias_y;
+    float gyro_bias_z;
+
+    // 卡尔曼增益 (用于诊断传感器权重)
+    float k_yaw_bias_z;      // yaw对bias_z的增益
+
+    // 加速度计融合状态
+    float accel_residual_x;
+    float accel_residual_y;
+    float accel_residual_z;
+    bool accel_used;         // 加速度计是否参与融合
+
+    // 磁力计融合状态
+    float mag_world_x;       // 世界坐标系下的磁场向量
+    float mag_world_y;
+    float mag_world_z;
+    float mag_body_x;        // 机体坐标系下的磁场向量
+    float mag_body_y;
+    float mag_body_z;
+    bool mag_used;           // 磁力计是否参与融合
+
+    // 协方差矩阵对角线元素 (可选，用于判断收敛状态)
+    float P_yaw;             // yaw的不确定性
+
+    uint64_t timestamp_us;
 };
 
 struct BatteryState
