@@ -69,6 +69,7 @@ public:
         float yaw_measured = 0.0f;
         float yaw_predicted = 0.0f;
         float yaw_residual = 0.0f;
+        float yaw_residual_std = 0.0f;  // 残差标准差（稳定性检测）
         Vector3f m_world;       // 新增：世界坐标系的磁场向量
         Vector3f m_body;        // 新增：机体坐标系的磁场向量
         Vector3f dtheta = Vector3f::Zero();
@@ -120,6 +121,7 @@ private:
     MagDebug   mag_dbg_;
 
     bool is_initialized = false;
+    bool mag_yaw_aligned = false;  // 磁力计航向是否已初始对齐
 
 private:
     float last_mag_k_yaw_bias_z = 0.0f;  // 保存最后一次磁力计融合的卡尔曼增益

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(echo:*)",
+      "Bash(env:*)",
+      "Bash(lsof:*)",
+      "Bash(curl:*)",
+      "Bash(idf.py build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "mcp__zai-mcp-server__extract_text_from_screenshot",
+      "Bash(. ~/esp/esp-idf/export.sh:*)",
+      "mcp__web-reader__webReader"
+    ]
+  }
+}

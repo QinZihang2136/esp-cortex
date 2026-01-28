@@ -1677,16 +1677,16 @@ function updateMonitor(imu, mag, ekf) {
     if (ekf && ekf.mag_world &&
         !isNaN(ekf.yaw_predicted) && isFinite(ekf.yaw_predicted)) {
 
-        // 实测航向：世界坐标系的磁场向量投影到水平面
-        // 注意：Three.js坐标系 vs FRD坐标系需要映射
-        const magWorld = new THREE.Vector3(
-            ekf.mag_world.y,
-            0,  // 投影到水平面，Y=0
-            ekf.mag_world.x
+        // 实测航向：使用 yaw_measured 角度直接计算方向
+        const yawMeas = ekf.yaw_measured * Math.PI / 180.0;
+        const yawMeasVec = new THREE.Vector3(
+            Math.cos(yawMeas),
+            0,  // 投影到水平面
+            Math.sin(yawMeas)
         ).normalize();
 
-        if (vecArrowYawMeasured && magWorld.length() > 0) {
-            vecArrowYawMeasured.setDirection(magWorld);
+        if (vecArrowYawMeasured && yawMeasVec.length() > 0) {
+            vecArrowYawMeasured.setDirection(yawMeasVec);
             vecArrowYawMeasured.setLength(1.5);
         }
 
@@ -1804,8 +1804,8 @@ function initVectorScene() {
     // Accel 箭头 (绿)
     vecArrowAcc = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), origin, 1.5, 0x198754);
     vecScene.add(vecArrowAcc);
-    // Mag 箭头 (红)
-    vecArrowMag = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), origin, 1.5, 0xdc3545);
+    // Mag 箭头 (橙色)
+    vecArrowMag = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), origin, 1.5, 0xff9800);
     vecScene.add(vecArrowMag);
 
     // 实测航向箭头 (红色，水平面)

@@ -167,6 +167,18 @@ void task_estimator_entry(void* arg)
             // 执行预测
             ekf.predict(gyro, dt);
 
+            // [诊断] 已关闭，避免看门狗超时
+            // 如需调试，请降低打印频率或使用 Web 界面查看
+            /*
+            if (cnt_imu_update % 10 == 0)
+            {
+                Eigen::Vector3f bias = ekf.get_gyro_bias();
+                float yaw_rate = (gyro.z() - bias.z()) * 57.29578f;  // rad/s -> deg/s
+                ESP_LOGI(TAG, "[GYRO] gz_raw=%.6f | bias_z=%.6f | gz_corr=%.6f (%.3f°/s)",
+                         gyro.z(), bias.z(), gyro.z() - bias.z(), yaw_rate);
+            }
+            */
+
             // --- B. 加速度计处理 (m/s^2) ---
             // 注意：这里目前是“整体取反”，目的是让平放时 accel.z ≈ +9.8，以匹配 EKF 内部当前重力方向约定。
             // 若你未来把 EKF 的重力方向改为与 FRD 比力一致（平放 -9.8），可取消这里的取反，并同步调整 init()。
@@ -208,10 +220,25 @@ void task_estimator_entry(void* arg)
                     mag_vec.y() = mag_data_snapshot.y;
                     mag_vec.z() = mag_data_snapshot.z;
                     ekf.fuse_mag(mag_vec);
+
+                    // [诊断] 已关闭，避免看门狗超时
+                    // 请使用 Web 界面查看 EKF 调试数据
+                    /*
+                    auto mag_dbg = ekf.get_last_mag_debug();
+                    ESP_LOGI(TAG, "[MAG] raw: x=%.3f y=%.3f z=%.3f G | "
+                                  "yaw_meas=%.2f° yaw_pred=%.2f° | residual=%.3f°",
+                             mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z,
+                             mag_dbg.yaw_measured * 57.29578f,
+                             mag_dbg.yaw_predicted * 57.29578f,
+                             mag_dbg.yaw_residual * 57.29578f);
+                    */
                 }
                 else
                 {
                     cnt_mag_reject++;
+                    // [诊断] 已关闭
+                    // ESP_LOGW(TAG, "[MAG] REJECTED: mag_norm=%.3f G (valid range: %.2f-%.2f)",
+                    //          mag_norm, mag_min_valid, mag_max_valid);
                 }
             }
 

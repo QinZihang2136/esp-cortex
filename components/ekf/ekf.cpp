@@ -1,5 +1,6 @@
 #include "ekf.hpp"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <cmath>
 
 static const char* TAG = "EKF";
@@ -310,26 +311,222 @@ void EspEKF::fuse_mag(const Vector3f& mag_meas)
     // 1. 归一化测量值
     Vector3f m_body = mag_meas.normalized();
 
-    // 2. 将机体坐标系下的磁场，旋转回世界坐标系 (Estimate World Mag)
-    // 利用当前预测的姿态 state.q (包含了准确的 Roll/Pitch)
-    // [Math] m_world = q * m_body
-    Vector3f m_world = state.q * m_body;
+    // 2. 倾斜补偿航向计算
+    // [问题] 不能直接用 m_body 计算航向（设备倾斜时不准确）
+    // [问题] 不能用 state.q * m_body（因为 state.q 包含 Yaw，会导致错误旋转）
+    // [解决] 创建只包含 Roll 和 Pitch 的旋转矩阵，把 m_body 旋转到水平面
 
-    // 3. 计算残差 (Yaw Error)
-    // 在世界系下，磁场向量投影到水平面 (X-Y平面) 的角度，就是当前的实测航向
-    // NED: yaw = atan2(E, N) = atan2(y, x)
-    float yaw_measured = atan2f(m_world.y(), m_world.x());
-
-    // [修复] 从当前姿态四元数提取预测的yaw角度
+    // 2.1 从当前姿态四元数提取 Roll 和 Pitch
     float qw = state.q.w();
     float qx = state.q.x();
     float qy = state.q.y();
     float qz = state.q.z();
+
+    // Roll (φ): 绕 X 轴旋转
+    float roll = atan2f(2.0f * (qw * qx + qy * qz), 1.0f - 2.0f * (qx * qx + qy * qy));
+
+    // Pitch (θ): 绕 Y 轴旋转
+    float pitch = asinf(2.0f * (qw * qy - qz * qx));
+
+    // 2.2 构建只包含 Roll 和 Pitch 的旋转矩阵
+    float cos_roll = cosf(roll);
+    float sin_roll = sinf(roll);
+    float cos_pitch = cosf(pitch);
+    float sin_pitch = sinf(pitch);
+
+    // R_rp = R_pitch * R_roll (FRD 坐标系)
+    // 先绕 X 轴旋转 Roll，再绕 Y 轴旋转 Pitch
+    Matrix3f R_rp;
+    R_rp << cos_pitch,  sin_roll * sin_pitch,  cos_roll * sin_pitch,
+            0,          cos_roll,             -sin_roll,
+            -sin_pitch, sin_roll * cos_pitch,  cos_roll * cos_pitch;
+
+    // 2.3 用 R_rp 把 m_body 旋转到水平面
+    Vector3f m_horizontal = R_rp * m_body;
+
+    // 2.4 在水平面上计算航向（投影到 XY 平面）
+    // [修复] 取反以匹配 IMU 航向方向（FRD 坐标系右手定则）
+    float yaw_measured = -atan2f(m_horizontal.y(), m_horizontal.x());
+
+    // 3. (用于调试对比) 原来的错误方法
+    Vector3f m_world = state.q * m_body;
+
+    // 4. 从当前姿态四元数提取预测的 yaw 角度
     float yaw_predicted = atan2f(2.0f * (qw * qz + qx * qy), 1.0f - 2.0f * (qy * qy + qz * qz));
 
     // [关键修复] 残差 = 测量值 - 预测值（而不是测量值 - 0）
     float yaw_residual = normalize_angle(yaw_measured - yaw_predicted);
 
+    // [调试模式] 只计算磁力计航向，不更新 EKF 状态
+    // 用于观察陀螺仪积分航向 vs 磁力计航向的差异
+    const bool enable_mag_debug_only = false;  // 启用正常融合
+
+    // 保存 debug 数据（即使不融合也保存）
+    mag_dbg_.used = false;  // 标记为未实际融合
+    mag_dbg_.yaw_measured = yaw_measured;
+    mag_dbg_.yaw_predicted = yaw_predicted;
+    mag_dbg_.yaw_residual = yaw_residual;
+    mag_dbg_.m_world = m_world;
+    mag_dbg_.m_body = m_body;
+
+    // 如果是调试模式，只保存数据后直接返回
+    if (enable_mag_debug_only) {
+        return;
+    }
+
+    // 以下是正常融合流程（调试模式下不执行）
+
+    // =====================================================================================
+    // [初始对齐] 首次磁力计融合：强制将 IMU 航向对齐到磁力计航向
+    // =====================================================================================
+    if (!mag_yaw_aligned)
+    {
+        // 首次融合：强制修正 yaw，不通过卡尔曼滤波
+        ESP_LOGI("EKF", "[MAG_INIT] Initial yaw alignment: yaw_measured=%.1f°, yaw_predicted=%.1f°, residual=%.1f°",
+                 yaw_measured * 57.29578f,
+                 yaw_predicted * 57.29578f,
+                 yaw_residual * 57.29578f);
+
+        // 提取当前的 roll 和 pitch（保持不变）
+        float roll = atan2f(2.0f * (qw * qx + qy * qz), 1.0f - 2.0f * (qx * qx + qy * qy));
+        float pitch = asinf(2.0f * (qw * qy - qz * qx));
+
+        // 使用磁力计的 yaw
+        float yaw = yaw_measured;
+
+        // 从欧拉角重建四元数 (ZYX 顺序，即 yaw -> pitch -> roll)
+        float cy = cosf(yaw * 0.5f);
+        float sy = sinf(yaw * 0.5f);
+        float cp = cosf(pitch * 0.5f);
+        float sp = sinf(pitch * 0.5f);
+        float cr = cosf(roll * 0.5f);
+        float sr = sinf(roll * 0.5f);
+
+        state.q.w() = cr * cp * cy + sr * sp * sy;
+        state.q.x() = sr * cp * cy - cr * sp * sy;
+        state.q.y() = cr * sp * cy + sr * cp * sy;
+        state.q.z() = cr * cp * sy - sr * sp * cy;
+
+        mag_yaw_aligned = true;  // 标记已完成对齐
+
+        mag_dbg_.used = true;
+        mag_dbg_.dtheta = Vector3f(0, 0, yaw_residual);  // 记录修正量
+        mag_dbg_.dbias = Vector3f::Zero();
+
+        ESP_LOGI("EKF", "[MAG_INIT] Yaw aligned to magnetometer: %.1f°", yaw * 57.29578f);
+        return;  // 对齐后直接返回，等待下一次融合
+    }
+
+    // [残差稳定性检测] - 参考 PX4 创新门限，但增加稳定性判断
+    // 区分两种情况：
+    // 1. 残差波动大（方差大）→ 磁力计受干扰 → 拒绝
+    // 2. 残差稳定但大（方差小，均值大）→ 系统性偏置 → 允许融合修正
+
+    // 计算最近 N 次残差的统计特性
+    const int window_size = 20;  // 20 个样本 @ 50Hz = 0.4 秒
+    static float residual_buffer[20] = {0};
+    static int residual_index = 0;
+    static int residual_count = 0;
+
+    // 存储当前残差
+    residual_buffer[residual_index] = yaw_residual;
+    residual_index = (residual_index + 1) % window_size;
+    if (residual_count < window_size) residual_count++;
+
+    // 基础门限（正常情况）
+    float residual_max = 0.175f;  // 10°
+    float residual_abs = std::fabs(yaw_residual);
+
+    // 当样本足够时，计算统计特性
+    if (residual_count >= window_size) {
+        // 计算均值
+        float mean = 0.0f;
+        for (int i = 0; i < window_size; i++) {
+            mean += residual_buffer[i];
+        }
+        mean /= window_size;
+
+        // 计算方差（标准差的平方）
+        float variance = 0.0f;
+        for (int i = 0; i < window_size; i++) {
+            float diff = residual_buffer[i] - mean;
+            variance += diff * diff;
+        }
+        variance /= window_size;
+        float std_dev = sqrtf(variance);
+
+        // 稳定性判断：如果标准差 < 5°，说明残差稳定
+        const float stable_threshold = 0.087f;  // 5°
+
+        if (std_dev < stable_threshold) {
+            // 残差稳定，但均值大 → 系统性偏置，放宽门限到 60°
+            residual_max = 1.047f;  // 60° (约1.047弧度)
+
+            // 首次检测到稳定偏置时打印日志
+            static bool was_stable = false;
+            if (!was_stable) {
+                ESP_LOGW("EKF", "[MAG_STABLE] Residual stable: mean=%.1f°, std=%.1f°, relaxing gate to 60°",
+                         mean * 57.29578f, std_dev * 57.29578f);
+                was_stable = true;
+            }
+        } else {
+            // 残差不稳定，说明受干扰，保持严格门限
+            static bool was_unstable = false;
+            if (!was_unstable && residual_count >= window_size) {
+                ESP_LOGW("EKF", "[MAG_UNSTABLE] Residual fluctuating: mean=%.1f°, std=%.1f°, keeping strict gate 10°",
+                         mean * 57.29578f, std_dev * 57.29578f);
+                was_unstable = true;
+            }
+        }
+
+        // 保存统计信息到 debug（用于网页显示）
+        mag_dbg_.yaw_residual_std = std_dev;
+    } else {
+        mag_dbg_.yaw_residual_std = 0.0f;
+    }
+
+    // [诊断] 打印（已注释，避免影响网页显示）
+    /*
+    static int mag_fuse_count = 0;
+    static uint64_t last_print_us = 0;
+    uint64_t now_us = esp_timer_get_time();
+
+    if (mag_fuse_count < 100) {
+        ESP_LOGW("EKF", "[MAG_DEBUG] m_body: x=%.3f y=%.3f z=%.3f | "
+                      "m_world: x=%.3f y=%.3f z=%.3f | "
+                      "yaw_meas=%.1f° yaw_pred=%.1f° | residual=%.1f°",
+                 m_body.x(), m_body.y(), m_body.z(),
+                 m_world.x(), m_world.y(), m_world.z(),
+                 yaw_measured * 57.29578f,
+                 yaw_predicted * 57.29578f,
+                 yaw_residual * 57.29578f);
+        mag_fuse_count++;
+        last_print_us = now_us;
+    }
+    else if ((now_us - last_print_us) > 5000000) {
+        ESP_LOGI("EKF", "[MAG_STATUS] yaw_meas=%.1f° yaw_pred=%.1f° | residual=%.1f°",
+                 yaw_measured * 57.29578f,
+                 yaw_predicted * 57.29578f,
+                 yaw_residual * 57.29578f);
+        last_print_us = now_us;
+    }
+    */
+
+    if (residual_abs > residual_max) {
+        // 残差过大，拒绝本次磁力计融合
+        ESP_LOGW("EKF", "[MAG_REJECT] Residual too large: %.1f° (max: %.1f°), std: %.1f°",
+                 yaw_residual * 57.29578f, residual_max * 57.29578f, mag_dbg_.yaw_residual_std * 57.29578f);
+
+        mag_dbg_.used = false;
+        mag_dbg_.yaw_measured = yaw_measured;
+        mag_dbg_.yaw_predicted = yaw_predicted;
+        mag_dbg_.yaw_residual = yaw_residual;
+        mag_dbg_.m_world = m_world;
+        mag_dbg_.m_body = m_body;
+        return;  // 直接返回，不更新状态和协方差
+    }
+
+    // 残差正常，接受融合
     // debug
     mag_dbg_.used = true;
     mag_dbg_.yaw_measured = yaw_measured;
@@ -381,6 +578,13 @@ void EspEKF::fuse_mag(const Vector3f& mag_meas)
     // B. 修正零偏
     Vector3f dbias = delta_x.tail<3>();
     state.gyro_bias += dbias;
+
+    // [紧急修复] 限制零偏范围，防止发散
+    // 正常的陀螺仪零偏应该在 ±0.05 rad/s 范围内
+    // 原来设置为 0.1 太大，导致零偏被钳制在边界值
+    const float max_bias = 0.05f;  // rad/s (约 2.9°/s)
+    state.gyro_bias = state.gyro_bias.cwiseMax(Vector3f(-max_bias, -max_bias, -max_bias));
+    state.gyro_bias = state.gyro_bias.cwiseMin(Vector3f(max_bias, max_bias, max_bias));
 
     // debug
     mag_dbg_.dtheta = delta_theta;
