@@ -20,8 +20,7 @@ static float normalize_angle(float angle)
 // 构造函数
 EspEKF::EspEKF()
 {
-    // 1. 初始化状态向量 x (全0)
-    // x = [Roll, Pitch, Yaw, Bias_Gx, Bias_Gy, Bias_Gz]^T
+    // 1. 初始化名义状态（四元数 + 陀螺仪零偏）
     state = NominalState();
 
     // 2. 初始化协方差矩阵 P (对角阵)
@@ -485,33 +484,6 @@ void EspEKF::fuse_mag(const Vector3f& mag_meas)
         mag_dbg_.yaw_residual_std = 0.0f;
     }
 
-    // [诊断] 打印（已注释，避免影响网页显示）
-    /*
-    static int mag_fuse_count = 0;
-    static uint64_t last_print_us = 0;
-    uint64_t now_us = esp_timer_get_time();
-
-    if (mag_fuse_count < 100) {
-        ESP_LOGW("EKF", "[MAG_DEBUG] m_body: x=%.3f y=%.3f z=%.3f | "
-                      "m_world: x=%.3f y=%.3f z=%.3f | "
-                      "yaw_meas=%.1f° yaw_pred=%.1f° | residual=%.1f°",
-                 m_body.x(), m_body.y(), m_body.z(),
-                 m_world.x(), m_world.y(), m_world.z(),
-                 yaw_measured * 57.29578f,
-                 yaw_predicted * 57.29578f,
-                 yaw_residual * 57.29578f);
-        mag_fuse_count++;
-        last_print_us = now_us;
-    }
-    else if ((now_us - last_print_us) > 5000000) {
-        ESP_LOGI("EKF", "[MAG_STATUS] yaw_meas=%.1f° yaw_pred=%.1f° | residual=%.1f°",
-                 yaw_measured * 57.29578f,
-                 yaw_predicted * 57.29578f,
-                 yaw_residual * 57.29578f);
-        last_print_us = now_us;
-    }
-    */
-
     if (residual_abs > residual_max) {
         // 残差过大，拒绝本次磁力计融合
         ESP_LOGW("EKF", "[MAG_REJECT] Residual too large: %.1f° (max: %.1f°), std: %.1f°",
@@ -549,8 +521,8 @@ void EspEKF::fuse_mag(const Vector3f& mag_meas)
 
     // =====================================================================================
     // [关键工程约束]
-    // 你注释写的是“只修正 Yaw 轴，不干扰 Roll/Pitch”
-    // 那就必须强制 K 只保留 yaw 和（可选）bias_z，其它通道清零，避免协方差耦合污染。
+    // 只修正 yaw，不干扰 roll/pitch：强制 K 仅保留 yaw 和（可选）bias_z，
+    // 其余通道清零，避免协方差耦合污染。
     // =====================================================================================
     K(0) = 0.0f; // roll
     K(1) = 0.0f; // pitch

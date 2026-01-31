@@ -16,7 +16,8 @@ public:
 
     // 观测维度
     static const int DIM_MEAS_ACC = 3;
-    static const int DIM_MEAS_MAG = 3;
+    // 当前磁力计融合为 yaw 标量观测（非 3 轴磁场向量）
+    static const int DIM_MEAS_MAG = 1;
 
     // ==========================================
     // 2. 类型定义 (数学公式化)
@@ -70,8 +71,8 @@ public:
         float yaw_predicted = 0.0f;
         float yaw_residual = 0.0f;
         float yaw_residual_std = 0.0f;  // 残差标准差（稳定性检测）
-        Vector3f m_world;       // 新增：世界坐标系的磁场向量
-        Vector3f m_body;        // 新增：机体坐标系的磁场向量
+        Vector3f m_world;       // 世界坐标系磁场向量（调试用）
+        Vector3f m_body;        // 机体坐标系磁场向量（调试用）
         Vector3f dtheta = Vector3f::Zero();
         Vector3f dbias = Vector3f::Zero();
     };
