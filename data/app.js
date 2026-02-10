@@ -7,6 +7,122 @@ const ESP_IP = window.location.host; // 自动获取当前IP
 // ================= 全局变量定义 =================
 let ws = null;
 let allParams = [];
+let lastDashboardRenderMs = 0;
+const DASHBOARD_RENDER_INTERVAL_MS = 33;
+const PERF_DEBUG_ENABLE = true;
+const TELEMETRY_QUEUE_SIZE = 64;
+const PERF_REPORT_INTERVAL_MS = 1000;
+const PERF_PROCESS_INTERVAL_MS = 20;
+let telemetryQueue = [];
+let telemetryQueueDropped = 0;
+let telemetryQueueMerged = 0;
+let perfLastReportMs = 0;
+
+const perfStats = {
+    ws_msg_count: 0,
+    queue_drop_count: 0,
+    queue_merge_count: 0,
+    plotly_extend_count: 0,
+    raf_dash_count: 0,
+    raf_monitor_count: 0,
+    json_parse: { sum: 0, max: 0, count: 0 },
+    handle_packet: { sum: 0, max: 0, count: 0 },
+    update_chart: { sum: 0, max: 0, count: 0 },
+    update_monitor: { sum: 0, max: 0, count: 0 }
+};
+let lastTxDiag = null;
+
+function perfAdd(bucket, dtMs) {
+    const b = perfStats[bucket];
+    if (!b) return;
+    b.sum += dtMs;
+    b.count += 1;
+    if (dtMs > b.max) b.max = dtMs;
+}
+
+function perfAvg(bucket) {
+    const b = perfStats[bucket];
+    if (!b || b.count === 0) return 0;
+    return b.sum / b.count;
+}
+
+function resetPerfWindow() {
+    perfStats.ws_msg_count = 0;
+    perfStats.queue_drop_count = 0;
+    perfStats.queue_merge_count = 0;
+    perfStats.plotly_extend_count = 0;
+    perfStats.raf_dash_count = 0;
+    perfStats.raf_monitor_count = 0;
+
+    for (const key of ['json_parse', 'handle_packet', 'update_chart', 'update_monitor']) {
+        perfStats[key].sum = 0;
+        perfStats[key].max = 0;
+        perfStats[key].count = 0;
+    }
+}
+
+function reportPerfIfNeeded(nowMs) {
+    if (!PERF_DEBUG_ENABLE) return;
+    if (perfLastReportMs === 0) {
+        perfLastReportMs = nowMs;
+        return;
+    }
+    const dt = nowMs - perfLastReportMs;
+    if (dt < PERF_REPORT_INTERVAL_MS) return;
+
+    const sec = dt / 1000.0;
+    const wsHz = perfStats.ws_msg_count / sec;
+    const dashFps = perfStats.raf_dash_count / sec;
+    const monitorFps = perfStats.raf_monitor_count / sec;
+    const plotlyHz = perfStats.plotly_extend_count / sec;
+
+    const txInfo = lastTxDiag
+        ? ` tx(rate/tgt/act/fb/ok/fail/json/max)=${lastTxDiag.rate_hz?.toFixed?.(1) ?? '--'}/${lastTxDiag.target_hz?.toFixed?.(1) ?? '--'}/${lastTxDiag.active_hz?.toFixed?.(1) ?? '--'}/${lastTxDiag.fallback ?? '--'}/${lastTxDiag.send_ok ?? '--'}/${lastTxDiag.send_fail ?? '--'}/${lastTxDiag.json_len ?? '--'}/${lastTxDiag.json_len_max ?? '--'}`
+        : "";
+
+    console.log(
+        `[PERF] ws=${wsHz.toFixed(1)}Hz ` +
+        `json=${perfAvg('json_parse').toFixed(2)}/${perfStats.json_parse.max.toFixed(2)}ms ` +
+        `handle=${perfAvg('handle_packet').toFixed(2)}/${perfStats.handle_packet.max.toFixed(2)}ms ` +
+        `chart=${perfAvg('update_chart').toFixed(2)}/${perfStats.update_chart.max.toFixed(2)}ms ` +
+        `monitor=${perfAvg('update_monitor').toFixed(2)}/${perfStats.update_monitor.max.toFixed(2)}ms ` +
+        `fps(dash/mon)=${dashFps.toFixed(1)}/${monitorFps.toFixed(1)} ` +
+        `plotly=${plotlyHz.toFixed(1)}/s queue(drop/merge)=${perfStats.queue_drop_count}/${perfStats.queue_merge_count}` +
+        txInfo
+    );
+
+    perfLastReportMs = nowMs;
+    resetPerfWindow();
+}
+
+function enqueueTelemetry(payload) {
+    if (telemetryQueue.length >= TELEMETRY_QUEUE_SIZE) {
+        telemetryQueue.shift();
+        telemetryQueueDropped++;
+        perfStats.queue_drop_count++;
+    }
+    telemetryQueue.push(payload);
+}
+
+function processTelemetryQueue() {
+    if (telemetryQueue.length === 0) {
+        reportPerfIfNeeded(performance.now());
+        return;
+    }
+
+    let latestPayload = telemetryQueue.pop();
+    const merged = telemetryQueue.length;
+    if (merged > 0) {
+        telemetryQueueMerged += merged;
+        perfStats.queue_merge_count += merged;
+    }
+    telemetryQueue.length = 0;
+
+    const t0 = performance.now();
+    handleDataPacket({ type: "telem", payload: latestPayload });
+    perfAdd('handle_packet', performance.now() - t0);
+    reportPerfIfNeeded(performance.now());
+}
 
 // 图表数据缓存
 let chartData = { labels: [], pitch: [], roll: [], yaw: [] };
@@ -82,6 +198,7 @@ window.onload = function () {
 
     // 默认显示波形图
     switchDashView('chart');
+    setInterval(processTelemetryQueue, PERF_PROCESS_INTERVAL_MS);
 
     if (IS_SIMULATION) {
         setConnStatus("模拟模式 (Simulation)", "bg-warning text-dark");
@@ -154,14 +271,20 @@ function handleDataPacket(jsonObj) {
 
         // 1. 遥测数据 (Telemetry)
         if (type === "telem") {
+        const nowMs = performance.now();
+        const canRenderDashboard = (nowMs - lastDashboardRenderMs) >= DASHBOARD_RENDER_INTERVAL_MS;
+        if (canRenderDashboard) {
+            lastDashboardRenderMs = nowMs;
+        }
+
         // 更新姿态数值
-        if (document.getElementById("val-bat")) document.getElementById("val-bat").innerText = payload.voltage.toFixed(1) + " V";
-        if (document.getElementById("val-pitch")) document.getElementById("val-pitch").innerText = payload.pitch.toFixed(1) + "°";
-        if (document.getElementById("val-roll")) document.getElementById("val-roll").innerText = payload.roll.toFixed(1) + "°";
-        if (document.getElementById("val-yaw")) document.getElementById("val-yaw").innerText = payload.yaw.toFixed(1) + "°";
+        if (canRenderDashboard && document.getElementById("val-bat")) document.getElementById("val-bat").innerText = payload.voltage.toFixed(1) + " V";
+        if (canRenderDashboard && document.getElementById("val-pitch")) document.getElementById("val-pitch").innerText = payload.pitch.toFixed(1) + "°";
+        if (canRenderDashboard && document.getElementById("val-roll")) document.getElementById("val-roll").innerText = payload.roll.toFixed(1) + "°";
+        if (canRenderDashboard && document.getElementById("val-yaw")) document.getElementById("val-yaw").innerText = payload.yaw.toFixed(1) + "°";
 
         // 更新系统状态 (Heap & Time)
-        if (payload.sys) {
+        if (payload.sys && canRenderDashboard) {
             if (document.getElementById("val-heap")) {
                 document.getElementById("val-heap").innerText = payload.sys.heap.toFixed(1);
             }
@@ -175,15 +298,21 @@ function handleDataPacket(jsonObj) {
         }
 
         // 更新图表数据
-        updateChart(payload);
+        const tChart = performance.now();
+        updateChart(payload, canRenderDashboard);
+        perfAdd('update_chart', performance.now() - tChart);
 
         // 更新 3D 模型
-        if (currentDashMode === '3d') {
+        if (currentDashMode === '3d' && canRenderDashboard) {
             update3DObject(payload.roll, payload.pitch, payload.yaw);
         }
 
-        // 更新EKF调试面板
         if (payload.ekf) {
+            lastTxDiag = payload.ekf.tx || null;
+        }
+
+        // 更新EKF调试面板
+        if (payload.ekf && canRenderDashboard) {
             const ekf = payload.ekf;
 
             // 安全检查：确保数据有效
@@ -245,6 +374,56 @@ function handleDataPacket(jsonObj) {
                 document.getElementById("ekf-k-yaw-bias-z").innerText =
                     ekf.k_yaw_bias_z.toFixed(6);
             }
+
+            // EKF频率
+            const rate = ekf.rate || {};
+            const imuHz = Number(rate.imu_hz);
+            const predictHz = Number(rate.predict_hz);
+            const accFuseHz = Number(rate.acc_fuse_hz);
+            const magFuseHz = Number(rate.mag_fuse_hz);
+
+            const elRateImu = document.getElementById("ekf-rate-imu");
+            const elRatePredict = document.getElementById("ekf-rate-predict");
+            const elRateAccFuse = document.getElementById("ekf-rate-acc-fuse");
+            const elRateMagFuse = document.getElementById("ekf-rate-mag-fuse");
+
+            if (elRateImu) elRateImu.innerText = isFinite(imuHz) && imuHz > 0 ? `${imuHz.toFixed(1)} Hz` : "-- Hz";
+            if (elRatePredict) {
+                if (isFinite(predictHz) && predictHz > 0) {
+                    elRatePredict.innerText = `${predictHz.toFixed(1)} Hz`;
+                    if (predictHz < 120.0) {
+                        elRatePredict.className = "small font-monospace text-danger";
+                    } else if (predictHz < 150.0) {
+                        elRatePredict.className = "small font-monospace text-warning";
+                    } else {
+                        elRatePredict.className = "small font-monospace text-body";
+                    }
+                } else {
+                    elRatePredict.innerText = "-- Hz";
+                    elRatePredict.className = "small font-monospace text-muted";
+                }
+            }
+            if (elRateAccFuse) elRateAccFuse.innerText = isFinite(accFuseHz) && accFuseHz > 0 ? `${accFuseHz.toFixed(1)} Hz` : "-- Hz";
+            if (elRateMagFuse) elRateMagFuse.innerText = isFinite(magFuseHz) && magFuseHz > 0 ? `${magFuseHz.toFixed(1)} Hz` : "-- Hz";
+
+            // Telemetry 发送链路诊断
+            const tx = ekf.tx || {};
+            const txRateHz = Number(tx.rate_hz);
+            const txOk = Number(tx.send_ok);
+            const txFail = Number(tx.send_fail);
+            const txJsonLen = Number(tx.json_len);
+            const txJsonMax = Number(tx.json_len_max);
+            const txStackHwm = Number(tx.stack_hwm);
+
+            const elTxRate = document.getElementById("ekf-tx-rate");
+            const elTxOkFail = document.getElementById("ekf-tx-ok-fail");
+            const elTxJsonLen = document.getElementById("ekf-tx-json-len");
+            const elTxStackHwm = document.getElementById("ekf-tx-stack-hwm");
+
+            if (elTxRate) elTxRate.innerText = isFinite(txRateHz) && txRateHz > 0 ? `${txRateHz.toFixed(1)} Hz` : "-- Hz";
+            if (elTxOkFail) elTxOkFail.innerText = isFinite(txOk) && isFinite(txFail) ? `${txOk} / ${txFail}` : "-- / --";
+            if (elTxJsonLen) elTxJsonLen.innerText = isFinite(txJsonLen) && isFinite(txJsonMax) ? `${txJsonLen} / ${txJsonMax}` : "-- / --";
+            if (elTxStackHwm) elTxStackHwm.innerText = isFinite(txStackHwm) && txStackHwm > 0 ? `${txStackHwm} bytes` : "-- bytes";
 
             // 异常警告逻辑
             const statusBadge = document.getElementById("ekf-status");
@@ -313,7 +492,9 @@ function handleDataPacket(jsonObj) {
 
             // [New] 驱动原始数据监控页面 (Monitor)
             // 这里调用我们新写的更新函数，传入 imu、mag 和 ekf
+            const tMonitor = performance.now();
             updateMonitor(payload.imu, payload.mag, payload.ekf);
+            perfAdd('update_monitor', performance.now() - tMonitor);
         }
     }
     // 2. 参数列表
@@ -354,9 +535,9 @@ function initChart() {
     });
 }
 
-function updateChart(data) {
-    const now = new Date().toLocaleTimeString();
-    chartData.labels.push(now);
+function updateChart(data, canRenderDashboard) {
+    // X 轴隐藏，避免每帧生成字符串时间戳带来的额外开销
+    chartData.labels.push("");
     chartData.pitch.push(data.pitch);
     chartData.roll.push(data.roll);
     chartData.yaw.push(data.yaw);
@@ -368,12 +549,12 @@ function updateChart(data) {
         chartData.yaw.shift();
     }
 
-    if (currentDashMode === 'chart') {
+    if (currentDashMode === 'chart' && canRenderDashboard) {
         mainChart.data.labels = chartData.labels;
         mainChart.data.datasets[0].data = chartData.pitch;
         mainChart.data.datasets[1].data = chartData.roll;
         mainChart.data.datasets[2].data = chartData.yaw;
-        mainChart.update();
+        mainChart.update('none');
     }
 }
 
@@ -425,7 +606,12 @@ function init3DScene() {
     const animate = function () {
         requestAnimationFrame(animate);
         if (controls) controls.update();
-        renderer.render(scene, camera);
+        const dashboardVisible = document.getElementById('view-dashboard') &&
+            document.getElementById('view-dashboard').style.display !== 'none';
+        if (dashboardVisible && currentDashMode === '3d') {
+            perfStats.raf_dash_count++;
+            renderer.render(scene, camera);
+        }
     };
     animate();
 }
@@ -998,7 +1184,20 @@ function connectWebSocket() {
     };
 
     ws.onmessage = (e) => {
-        try { handleDataPacket(JSON.parse(e.data)); }
+        try {
+            const tParse = performance.now();
+            const jsonObj = JSON.parse(e.data);
+            perfAdd('json_parse', performance.now() - tParse);
+            perfStats.ws_msg_count++;
+
+            if (jsonObj.type === "telem" && jsonObj.payload) {
+                enqueueTelemetry(jsonObj.payload);
+            } else {
+                const tHandle = performance.now();
+                handleDataPacket(jsonObj);
+                perfAdd('handle_packet', performance.now() - tHandle);
+            }
+        }
         catch (err) { console.error(err); }
     };
 }
@@ -1044,9 +1243,7 @@ function startSimulationDataLoop() {
             simAccel.z += (Math.random() - 0.5) * 0.02;
         }
 
-        handleDataPacket({
-            type: "telem",
-            payload: {
+        enqueueTelemetry({
                 voltage: 12.0 + Math.random() * 0.1,
                 pitch: Math.sin(t) * 20, roll: Math.cos(t) * 15, yaw: t * 10 % 360,
                 sys: { heap: 200 + Math.sin(t) * 10, time: Math.floor(t * 100) },
@@ -1063,7 +1260,6 @@ function startSimulationDataLoop() {
                     // 加速度计
                     ax: simAccel.x, ay: simAccel.y, az: simAccel.z
                 }
-            }
         });
     }, 50);
 }
@@ -1571,6 +1767,10 @@ function calculateFinalOrientation() {
 let monitorInited = false;
 let isChartPaused = false;
 let currentScopeType = 'acc'; // acc, gyro, mag
+let lastMonitorRenderMs = 0;
+let lastScopePlotMs = 0;
+const MONITOR_RENDER_INTERVAL_MS = 100;
+const SCOPE_PLOT_INTERVAL_MS = 120;
 
 // 3D 对象引用
 let vecRenderer, vecScene, vecCamera, vecArrowAcc, vecArrowMag;
@@ -1639,42 +1839,49 @@ window.resetGyroIntegration = function () {
 // --- 核心更新逻辑 (在 handleDataPacket 中调用) ---
 function updateMonitor(imu, mag, ekf) {
     if (!monitorInited || document.getElementById('view-monitor').style.display === 'none') return;
+    const nowMs = performance.now();
+    const canRenderMonitor = (nowMs - lastMonitorRenderMs) >= MONITOR_RENDER_INTERVAL_MS;
+    if (canRenderMonitor) {
+        lastMonitorRenderMs = nowMs;
+    }
 
     // 1. 更新数值仪表盘 (保持不变)
-    document.getElementById('raw-ax').innerText = imu.ax.toFixed(2);
-    document.getElementById('raw-ay').innerText = imu.ay.toFixed(2);
-    document.getElementById('raw-az').innerText = imu.az.toFixed(2);
-    const aNorm = Math.sqrt(imu.ax ** 2 + imu.ay ** 2 + imu.az ** 2);
-    document.getElementById('raw-a-norm').innerText = aNorm.toFixed(2);
+    if (canRenderMonitor) {
+        document.getElementById('raw-ax').innerText = imu.ax.toFixed(2);
+        document.getElementById('raw-ay').innerText = imu.ay.toFixed(2);
+        document.getElementById('raw-az').innerText = imu.az.toFixed(2);
+        const aNorm = Math.sqrt(imu.ax ** 2 + imu.ay ** 2 + imu.az ** 2);
+        document.getElementById('raw-a-norm').innerText = aNorm.toFixed(2);
 
-    document.getElementById('raw-gx').innerText = imu.gx.toFixed(2);
-    document.getElementById('raw-gy').innerText = imu.gy.toFixed(2);
-    document.getElementById('raw-gz').innerText = imu.gz.toFixed(2);
+        document.getElementById('raw-gx').innerText = imu.gx.toFixed(2);
+        document.getElementById('raw-gy').innerText = imu.gy.toFixed(2);
+        document.getElementById('raw-gz').innerText = imu.gz.toFixed(2);
 
-    if (mag) {
-        document.getElementById('raw-mx').innerText = mag.x.toFixed(2);
-        document.getElementById('raw-my').innerText = mag.y.toFixed(2);
-        document.getElementById('raw-mz').innerText = mag.z.toFixed(2);
-        const mNorm = Math.sqrt(mag.x ** 2 + mag.y ** 2 + mag.z ** 2);
-        document.getElementById('raw-m-norm').innerText = mNorm.toFixed(2);
+        if (mag) {
+            document.getElementById('raw-mx').innerText = mag.x.toFixed(2);
+            document.getElementById('raw-my').innerText = mag.y.toFixed(2);
+            document.getElementById('raw-mz').innerText = mag.z.toFixed(2);
+            const mNorm = Math.sqrt(mag.x ** 2 + mag.y ** 2 + mag.z ** 2);
+            document.getElementById('raw-m-norm').innerText = mNorm.toFixed(2);
+        }
     }
 
     // 2. 向量视图 (保持你刚才满意的状态)
-    if (vecArrowAcc) {
+    if (vecArrowAcc && canRenderMonitor) {
         // Accel: FRD z-down is gravity. So -az is up.
         // Map: y -> x (Right), -z -> y (Up), x -> z (Forward)
         const vAcc = new THREE.Vector3(imu.ay, -imu.az, imu.ax).normalize();
         vecArrowAcc.setDirection(vAcc);
         vecArrowAcc.setLength(1.5);
     }
-    if (mag && vecArrowMag) {
+    if (mag && vecArrowMag && canRenderMonitor) {
         const vMag = new THREE.Vector3(mag.y, -mag.z, mag.x).normalize();
         vecArrowMag.setDirection(vMag);
         vecArrowMag.setLength(1.5);
     }
 
     // 更新航向箭头 (EKF调试)
-    if (ekf && ekf.mag_world &&
+    if (canRenderMonitor && ekf && ekf.mag_world &&
         !isNaN(ekf.yaw_predicted) && isFinite(ekf.yaw_predicted)) {
 
         // 实测航向：使用 yaw_measured 角度直接计算方向
@@ -1714,7 +1921,7 @@ function updateMonitor(imu, mag, ekf) {
     // accPitch: 绕 Y 轴旋转 (抬头低头)
     const accPitch = Math.atan2(-imu.ax, Math.sqrt(imu.ay ** 2 + imu.az ** 2));
 
-    if (attBoxAcc) {
+    if (attBoxAcc && canRenderMonitor) {
         // Three.js rotation.set(x, y, z) 对应的是 绕X轴, 绕Y轴, 绕Z轴
         // 在我们的视图映射中：
         // 视觉 X轴 (红色) = 机体 Pitch 轴
@@ -1754,12 +1961,13 @@ function updateMonitor(imu, mag, ekf) {
         gyroQuat.normalize();
     }
 
-    if (attBoxGyro) {
+    if (attBoxGyro && canRenderMonitor) {
         attBoxGyro.setRotationFromQuaternion(gyroQuat);
     }
 
-    // 4. 波形图更新 (保持不变)
-    if (!isChartPaused) {
+    // 4. 波形图更新 (Plotly 节流，避免高频重排)
+    if (!isChartPaused && (nowMs - lastScopePlotMs) >= SCOPE_PLOT_INTERVAL_MS) {
+        lastScopePlotMs = nowMs;
         let val0 = 0, val1 = 0, val2 = 0;
         if (currentScopeType === 'acc') {
             val0 = imu.ax; val1 = imu.ay; val2 = imu.az;
@@ -1771,6 +1979,7 @@ function updateMonitor(imu, mag, ekf) {
         Plotly.extendTraces('plotly-scope', {
             y: [[val0], [val1], [val2]]
         }, [0, 1, 2], MAX_SCOPE_POINTS);
+        perfStats.plotly_extend_count++;
     }
 }
 
@@ -1865,6 +2074,7 @@ function initAttitudeScene() {
 function animateMonitor() {
     requestAnimationFrame(animateMonitor);
     if (document.getElementById('view-monitor').style.display !== 'none') {
+        perfStats.raf_monitor_count++;
         if (vecRenderer && vecScene && vecCamera) vecRenderer.render(vecScene, vecCamera);
         if (attRenderer && attScene && attCamera) attRenderer.render(attScene, attCamera);
     }

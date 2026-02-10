@@ -1,23 +1,19 @@
 #include "task_estimator.hpp"
-#include "ekf.hpp"          // 引用数学核心
-#include "robot_bus.hpp"    // 引用总线
+#include "ekf.hpp"
+#include "robot_bus.hpp"
+#include "param_registry.hpp"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_timer.h"
-#include "debug_log.hpp"    // 调试打印控制 (来自 common 组件)
+#include "debug_log.hpp"
 #include <cmath>
 
 static const char* TAG = "ESTIMATOR";
 DEBUG_ESTIMATOR_INIT(TAG)
 
-// 角度单位换算（仅用于输出）
-// imu_data.gx/gy/gz 已是 rad/s，避免重复转换。
-static const float RAD_TO_DEG = 57.29578f;
+static constexpr float RAD_TO_DEG = 57.29578f;
 
-// =======================
-// 调试辅助：角度 wrap / 差分
-// =======================
 static inline float wrap_deg(float a)
 {
     while (a > 180.0f) a -= 360.0f;
@@ -32,23 +28,43 @@ static inline float delta_deg(float now, float prev)
 
 void task_estimator_entry(void* arg)
 {
-    // 1. 实例化数学核心
     EspEKF ekf;
 
-    // [初始化说明]
-    // SensorTask 已经把 IMU 数据映射到 FRD。
-    // 但在本文件里，你对 accel 又做了取反（见下方 accel = -imu_data.a*），
-    // 因此“送入 EKF fuse_accel() 的 accel”在平放静止时会接近 [0, 0, +9.8]。
-    // 为了与当前这一约定一致，这里使用 +9.81 初始化。
-    //
-    // 如果你未来决定“不在这里取反 accel”（即直接用 FRD 下的原始比力，平放应为 [0,0,-9.8]），
-    // 那么这里也应改为 ekf.init(Eigen::Vector3f(0.0f, 0.0f, -9.81f));
-    ekf.init(Eigen::Vector3f(0.0f, 0.0f, 9.81f));
+    // FRD specific force convention: flat rest is ~[0,0,-9.81].
+    ekf.init(Eigen::Vector3f(0.0f, 0.0f, -9.81f));
 
-    // 2. 注册总线监听
-    RobotBus::instance().imu.register_notifier();
-    // 虽然没有 wait mag notifier，但 copy_if_updated 依赖 gen，注册更稳妥
-    RobotBus::instance().mag.register_notifier();
+    auto& bus = RobotBus::instance();
+    auto& params = ParamRegistry::instance();
+
+    // EKF runtime parameters (registered once; values loaded from NVS if available)
+    static float ekf_q_angle = 0.001f;
+    static float ekf_q_gyro_bias = 0.0001f;
+    static float ekf_q_accel_bias = 0.0001f;
+    static float ekf_r_accel_base = 0.20f;
+    static float ekf_r_mag_base = 0.15f;
+    static float ekf_mag_w_min = 0.10f;
+    static float ekf_mag_gate_deg = 30.0f;
+    static float ekf_acc_gate_ms2 = 3.5f;
+    static float ekf_declin_deg = 4.5f;
+
+    params.register_float("EKF_Q_ANGLE", &ekf_q_angle, ekf_q_angle);
+    params.register_float("EKF_Q_GYRO_BIAS", &ekf_q_gyro_bias, ekf_q_gyro_bias);
+    params.register_float("EKF_Q_ACCEL_BIAS", &ekf_q_accel_bias, ekf_q_accel_bias);
+    params.register_float("EKF_R_ACCEL_BASE", &ekf_r_accel_base, ekf_r_accel_base);
+    params.register_float("EKF_R_MAG_BASE", &ekf_r_mag_base, ekf_r_mag_base);
+    params.register_float("EKF_MAG_W_MIN", &ekf_mag_w_min, ekf_mag_w_min);
+    params.register_float("EKF_MAG_GATE_DEG", &ekf_mag_gate_deg, ekf_mag_gate_deg);
+    params.register_float("EKF_ACC_GATE_MS2", &ekf_acc_gate_ms2, ekf_acc_gate_ms2);
+    params.register_float("EKF_DECLIN_DEG", &ekf_declin_deg, ekf_declin_deg);
+
+    ekf.set_process_noise(ekf_q_angle, ekf_q_gyro_bias, ekf_q_accel_bias);
+    ekf.set_measure_noise_accel(ekf_r_accel_base);
+    ekf.set_measure_noise_mag(ekf_r_mag_base);
+    ekf.set_mag_declination(ekf_declin_deg);
+    ekf.set_adaptive_fusion_config(ekf_mag_w_min, ekf_mag_gate_deg, ekf_acc_gate_ms2);
+
+    bus.imu.register_notifier();
+    bus.mag.register_notifier();
 
     ImuData imu_data{};
     uint32_t last_imu_gen = 0;
@@ -56,27 +72,18 @@ void task_estimator_entry(void* arg)
     MagData mag_data_snapshot{};
     uint32_t last_mag_gen = 0;
 
-    DEBUG_ESTIMATOR_LOG("Estimator Task Started (FRD).");
+    DEBUG_ESTIMATOR_LOG("Estimator Task Started (FRD specific-force convention).");
 
-    // =======================
-    // Debug 状态缓存
-    // =======================
     static bool dbg_inited = false;
     static float last_yaw_deg = 0.0f;
     static uint64_t last_yaw_us = 0;
 
-    // =======================
-    // 时间基 Debug
-    // =======================
     bool imu_time_inited = false;
     uint64_t last_imu_time_us = 0;
 
     bool wall_time_inited = false;
     uint64_t last_wall_us = 0;
 
-    // =======================
-    // 统计计数器（跑一段时间看整体健康度）
-    // =======================
     uint32_t cnt_imu_update = 0;
     uint32_t cnt_time_backwards = 0;
     uint32_t cnt_dt_capped = 0;
@@ -84,25 +91,33 @@ void task_estimator_entry(void* arg)
     uint32_t cnt_acc_accept = 0;
     uint32_t cnt_mag_reject = 0;
     uint32_t cnt_mag_accept = 0;
+    uint32_t cnt_predict_call = 0;
+    uint32_t cnt_acc_fuse_call = 0;
+    uint32_t cnt_mag_fuse_call = 0;
+    uint32_t win_imu_update = 0;
+    uint32_t win_predict_call = 0;
+    uint32_t win_acc_fuse_call = 0;
+    uint32_t win_mag_fuse_call = 0;
 
-    // 磁力计融合参数
-    // 地磁场正常范围约 0.25~0.65 Gauss，根据网页端实测值调整
-    const float mag_min_valid = 0.15f;  // 最小有效磁场强度 (Gauss)
-    const float mag_max_valid = 1.0f;   // 最大有效磁场强度 (Gauss)
+    const float mag_min_valid = 0.05f;
+    const float mag_max_valid = 2.00f;
+
+    uint64_t last_param_sync_us = 0;
+    uint64_t last_rate_window_us = 0;
+    float last_rate_imu_hz = 0.0f;
+    float last_rate_predict_hz = 0.0f;
+    float last_rate_acc_fuse_hz = 0.0f;
+    float last_rate_mag_fuse_hz = 0.0f;
 
     while (1)
     {
-        // 3. 等待通知 (阻塞式，最长等待 100ms)
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
 
-        // 4. 尝试获取最新 IMU 数据
-        if (RobotBus::instance().imu.copy_if_updated(imu_data, last_imu_gen))
+        if (bus.imu.copy_if_updated(imu_data, last_imu_gen))
         {
             cnt_imu_update++;
+            win_imu_update++;
 
-            // ==========================================
-            // dt：同时用 IMU 时间戳与 esp_timer 计算，交叉验证时间基
-            // ==========================================
             const uint64_t now_imu_us = imu_data.timestamp_us;
             const uint64_t now_wall_us = esp_timer_get_time();
 
@@ -113,20 +128,17 @@ void task_estimator_entry(void* arg)
             {
                 imu_time_inited = true;
                 last_imu_time_us = now_imu_us;
-                // 第一次先不做 EKF 更新（避免 dt 异常）
                 continue;
             }
-            else
+
+            if (now_imu_us <= last_imu_time_us)
             {
-                if (now_imu_us <= last_imu_time_us)
-                {
-                    cnt_time_backwards++;
-                    last_imu_time_us = now_imu_us;
-                    continue;
-                }
-                dt_imu = (now_imu_us - last_imu_time_us) * 1e-6f;
+                cnt_time_backwards++;
                 last_imu_time_us = now_imu_us;
+                continue;
             }
+            dt_imu = (now_imu_us - last_imu_time_us) * 1e-6f;
+            last_imu_time_us = now_imu_us;
 
             if (!wall_time_inited)
             {
@@ -143,72 +155,69 @@ void task_estimator_entry(void* arg)
             }
 
             float dt = dt_imu;
-
-            // 限制 dt 最大值，防止断点调试或掉帧后积分爆炸
             if (dt > 0.1f)
             {
                 cnt_dt_capped++;
-                dt = 0.005f; // 默认给一个 200Hz 的时间步长
+                dt = 0.005f;
             }
 
-            // ==========================================
-            // 坐标系说明
-            // ==========================================
-            // SensorTask 输出的 imu_data 已是 FRD（前-右-下）：
-            //  - Gyro/Accel 的符号已按 FRD 右手系映射
-            //  - 单位：gyro rad/s，accel m/s^2
+            if (now_wall_us - last_param_sync_us > 1000000ULL)
+            {
+                last_param_sync_us = now_wall_us;
+                ekf.set_process_noise(ekf_q_angle, ekf_q_gyro_bias, ekf_q_accel_bias);
+                ekf.set_measure_noise_accel(ekf_r_accel_base);
+                ekf.set_measure_noise_mag(ekf_r_mag_base);
+                ekf.set_mag_declination(ekf_declin_deg);
+                ekf.set_adaptive_fusion_config(ekf_mag_w_min, ekf_mag_gate_deg, ekf_acc_gate_ms2);
+            }
 
-            // --- A. 陀螺仪处理 (rad/s) ---
             Eigen::Vector3f gyro;
             gyro.x() = imu_data.gx;
             gyro.y() = imu_data.gy;
             gyro.z() = imu_data.gz;
 
-            // 执行预测
             ekf.predict(gyro, dt);
+            cnt_predict_call++;
+            win_predict_call++;
 
-            // --- B. 加速度计处理 (m/s^2) ---
-            // 注意：这里目前是“整体取反”，目的是让平放时 accel.z ≈ +9.8，以匹配 EKF 内部当前重力方向约定。
-            // 若你未来把 EKF 的重力方向改为与 FRD 比力一致（平放 -9.8），可取消这里的取反，并同步调整 init()。
             Eigen::Vector3f accel;
-            accel.x() = -imu_data.ax;
-            accel.y() = -imu_data.ay;
-            accel.z() = -imu_data.az;
+            accel.x() = imu_data.ax;
+            accel.y() = imu_data.ay;
+            accel.z() = imu_data.az;
 
-            // 融合判断
-            float acc_norm = accel.norm();
-            bool acc_gate_ok = (acc_norm > 5.0f && acc_norm < 15.0f);
+            const float acc_norm = accel.norm();
+            const bool acc_gate_ok = (acc_norm > 2.0f && acc_norm < 30.0f);
 
             if (acc_gate_ok)
             {
                 cnt_acc_accept++;
-                ekf.fuse_accel(accel);
+                ekf.fuse_accel(accel, gyro.norm());
+                cnt_acc_fuse_call++;
+                win_acc_fuse_call++;
             }
             else
             {
                 cnt_acc_reject++;
             }
 
-            // --- C. 磁力计处理 ---
-            if (RobotBus::instance().mag.copy_if_updated(mag_data_snapshot, last_mag_gen))
+            if (bus.mag.copy_if_updated(mag_data_snapshot, last_mag_gen))
             {
-                // 磁力计有效性检查：确保数据在合理范围内
-                float mag_norm = std::sqrt(mag_data_snapshot.x * mag_data_snapshot.x +
+                const float mag_norm = std::sqrt(mag_data_snapshot.x * mag_data_snapshot.x +
                     mag_data_snapshot.y * mag_data_snapshot.y +
                     mag_data_snapshot.z * mag_data_snapshot.z);
 
-                bool mag_gate_ok = (mag_norm > mag_min_valid && mag_norm < mag_max_valid);
+                const bool mag_gate_ok = (mag_norm > mag_min_valid && mag_norm < mag_max_valid);
 
                 if (mag_gate_ok)
                 {
                     cnt_mag_accept++;
                     Eigen::Vector3f mag_vec;
-                    // SensorTask 已做 FRD 映射，直接使用
                     mag_vec.x() = mag_data_snapshot.x;
                     mag_vec.y() = mag_data_snapshot.y;
                     mag_vec.z() = mag_data_snapshot.z;
                     ekf.fuse_mag(mag_vec);
-
+                    cnt_mag_fuse_call++;
+                    win_mag_fuse_call++;
                 }
                 else
                 {
@@ -216,28 +225,18 @@ void task_estimator_entry(void* arg)
                 }
             }
 
-            // --- D. 发布姿态 ---
             Eigen::Vector3f euler = ekf.get_euler_angles();
 
             AttitudeData att;
-            // 弧度转角度 (rad -> deg)
             att.roll = euler.x() * RAD_TO_DEG;
             att.pitch = euler.y() * RAD_TO_DEG;
-            att.yaw = euler.z() * RAD_TO_DEG;
+            att.yaw = wrap_deg(euler.z() * RAD_TO_DEG);
+            bus.attitude.publish(att);
 
-            // 建议保持 yaw 在 [-180, 180]（便于差分和观察 wrap）
-            att.yaw = wrap_deg(att.yaw);
-
-            RobotBus::instance().attitude.publish(att);
-
-            // ==========================================================
-            // 发布EKF调试数据
-            // ==========================================================
-            // 获取调试数据
             auto accel_dbg = ekf.get_last_accel_debug();
             auto mag_dbg = ekf.get_last_mag_debug();
 
-            EKFDebugData ekf_dbg;
+            EKFDebugData ekf_dbg{};
             ekf_dbg.yaw_measured = mag_dbg.yaw_measured;
             ekf_dbg.yaw_predicted = mag_dbg.yaw_predicted;
             ekf_dbg.yaw_residual = mag_dbg.yaw_residual;
@@ -260,16 +259,20 @@ void task_estimator_entry(void* arg)
             ekf_dbg.mag_body_z = mag_dbg.m_body.z();
             ekf_dbg.mag_used = mag_dbg.used;
 
+            ekf_dbg.mag_weight = mag_dbg.mag_weight;
+            ekf_dbg.acc_weight = accel_dbg.acc_weight;
+            ekf_dbg.yaw_residual_std = mag_dbg.yaw_residual_std;
+            ekf_dbg.acc_norm = accel_dbg.acc_norm;
+            ekf_dbg.rate_imu_hz = last_rate_imu_hz;
+            ekf_dbg.rate_predict_hz = last_rate_predict_hz;
+            ekf_dbg.rate_acc_fuse_hz = last_rate_acc_fuse_hz;
+            ekf_dbg.rate_mag_fuse_hz = last_rate_mag_fuse_hz;
+
             ekf_dbg.P_yaw = ekf.get_P_yaw();
             ekf_dbg.k_yaw_bias_z = ekf.get_last_mag_k_yaw_bias_z();
             ekf_dbg.timestamp_us = now_imu_us;
+            bus.ekf_debug.publish(ekf_dbg);
 
-            RobotBus::instance().ekf_debug.publish(ekf_dbg);
-
-            // ==========================================================
-            // 高判定力 Debug 输出
-            // ==========================================================
-            // 1) 计算 yaw 角速度（差分后做 wrap，避免跨 -180/180 产生假尖峰）
             float yaw_rate_deg_s = 0.0f;
             if (!dbg_inited)
             {
@@ -279,7 +282,7 @@ void task_estimator_entry(void* arg)
             }
             else
             {
-                float dt_yaw = (now_imu_us - last_yaw_us) * 1e-6f;
+                const float dt_yaw = (now_imu_us - last_yaw_us) * 1e-6f;
                 if (dt_yaw > 1e-4f && dt_yaw < 0.2f)
                 {
                     yaw_rate_deg_s = delta_deg(att.yaw, last_yaw_deg) / dt_yaw;
@@ -288,29 +291,20 @@ void task_estimator_entry(void* arg)
                 last_yaw_us = now_imu_us;
             }
 
-            // 2) 读取 EKF 内部估计的 gyro bias，并构造 omega
-            // bias 已在上面定义，这里直接复用
             Eigen::Vector3f omega = gyro - bias;
 
-            // 3) 欧拉角奇异性判据（Pitch 接近 ±90° 时：Yaw/Roll 会变得不稳定，这是数学事实）
-            // “前向轴投影到水平面”的长度 ~ |cos(pitch)|
-            float pitch_rad = euler.y();
-            float horiz = std::fabs(std::cos(pitch_rad)); // 越接近 0，航向越不可定义
-            bool near_singularity = (std::fabs(att.pitch) > 80.0f);
+            const float pitch_rad = euler.y();
+            const float horiz = std::fabs(std::cos(pitch_rad));
+            const bool near_singularity = (std::fabs(att.pitch) > 80.0f);
 
-            // 4) 打印策略：
-            //    - 正常：1Hz
-            //    - Pitch 接近 90°：5Hz，抓取欧拉角跳变的现场
             static uint64_t last_print_us = 0;
-            uint64_t now_print_us = esp_timer_get_time();
-            uint64_t period_us = near_singularity ? DEBUG_ESTIMATOR_PRINT_INTERVAL_FAST : DEBUG_ESTIMATOR_PRINT_INTERVAL_NORMAL;
+            const uint64_t now_print_us = esp_timer_get_time();
+            const uint64_t period_us = near_singularity ? DEBUG_ESTIMATOR_PRINT_INTERVAL_FAST : DEBUG_ESTIMATOR_PRINT_INTERVAL_NORMAL;
 
             if (now_print_us - last_print_us > period_us)
             {
                 last_print_us = now_print_us;
-
-                // 时间基健康度：dt_imu 与 dt_wall 的偏差（wall_time_inited 后才有意义）
-                float dt_diff = (dt_wall > 0.0f) ? (dt_imu - dt_wall) : 0.0f;
+                const float dt_diff = (dt_wall > 0.0f) ? (dt_imu - dt_wall) : 0.0f;
 
                 DEBUG_ESTIMATOR_EULER_LOG(
                     "Euler(deg) R:%7.2f P:%7.2f Y:%7.2f | Ydot:%7.2f deg/s | dt:%7.4f | horiz:%6.3f%s",
@@ -324,15 +318,12 @@ void task_estimator_entry(void* arg)
                     bias.x(), bias.y(), bias.z(),
                     omega.x(), omega.y(), omega.z());
 
-                // accel 原始/取反/门限
                 DEBUG_ESTIMATOR_ACCEL_LOG(
-                    "AccelRaw(FRD) [%.2f %.2f %.2f] | AccUsed(-raw) [%.2f %.2f %.2f] | AccNorm:%5.2f | Gate:%s | AccZ:%6.2f",
-                    imu_data.ax, imu_data.ay, imu_data.az,
+                    "Accel(FRD) [%.2f %.2f %.2f] | Norm:%5.2f | Gate:%s | W_acc:%.3f",
                     accel.x(), accel.y(), accel.z(),
                     acc_norm, acc_gate_ok ? "OK" : "REJ",
-                    accel.z());
+                    accel_dbg.acc_weight);
 
-                // 时间戳对齐与统计
                 DEBUG_ESTIMATOR_TIME_LOG(
                     "Time dt_imu:%0.4f dt_wall:%0.4f diff:%+0.4f",
                     dt_imu, dt_wall, dt_diff);
@@ -347,8 +338,38 @@ void task_estimator_entry(void* arg)
                     (unsigned)cnt_mag_accept,
                     (unsigned)cnt_mag_reject);
 
-                // 可选：观察磁力计（即使不融合）
-                DEBUG_ESTIMATOR_MAG_LOG("Mag(FRD) [%.3f %.3f %.3f]", mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z);
+                DEBUG_ESTIMATOR_MAG_LOG("Mag(FRD) [%.3f %.3f %.3f] | W_mag:%.3f std:%.3f",
+                    mag_data_snapshot.x, mag_data_snapshot.y, mag_data_snapshot.z,
+                    mag_dbg.mag_weight, mag_dbg.yaw_residual_std);
+            }
+
+            // 频率统计窗口：每 1 秒输出一次实时频率（用于评估真实 EKF 运行频率）
+            if (last_rate_window_us == 0)
+            {
+                last_rate_window_us = now_wall_us;
+            }
+            else if (now_wall_us - last_rate_window_us >= 1000000ULL)
+            {
+                const float win_sec = (now_wall_us - last_rate_window_us) * 1e-6f;
+                const float imu_hz = (win_sec > 1e-3f) ? (win_imu_update / win_sec) : 0.0f;
+                const float predict_hz = (win_sec > 1e-3f) ? (win_predict_call / win_sec) : 0.0f;
+                const float acc_fuse_hz = (win_sec > 1e-3f) ? (win_acc_fuse_call / win_sec) : 0.0f;
+                const float mag_fuse_hz = (win_sec > 1e-3f) ? (win_mag_fuse_call / win_sec) : 0.0f;
+                last_rate_imu_hz = imu_hz;
+                last_rate_predict_hz = predict_hz;
+                last_rate_acc_fuse_hz = acc_fuse_hz;
+                last_rate_mag_fuse_hz = mag_fuse_hz;
+
+                DEBUG_ESTIMATOR_LOG(
+                    "[RATE] win=%.2fs imu=%.1fHz predict=%.1fHz acc_fuse=%.1fHz mag_fuse=%.1fHz",
+                    win_sec, imu_hz, predict_hz, acc_fuse_hz, mag_fuse_hz);
+
+                // 重置窗口计数（保持原有总计数器不变）
+                win_imu_update = 0;
+                win_predict_call = 0;
+                win_acc_fuse_call = 0;
+                win_mag_fuse_call = 0;
+                last_rate_window_us = now_wall_us;
             }
         }
     }
@@ -356,7 +377,5 @@ void task_estimator_entry(void* arg)
 
 void start_estimator_task()
 {
-    // 优先级设为 4 (比 Sensor 高一点，或持平)
-    // 栈大小设为 8192 (Eigen 库比较吃栈，给大点安全)
     xTaskCreatePinnedToCore(task_estimator_entry, "Estimator", 8192, NULL, 4, NULL, 1);
 }

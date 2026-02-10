@@ -7,7 +7,7 @@ class WebServer
 public:
     // 单例模式获取实例
     static WebServer& instance() { static WebServer i; return i; }
-    void send_ws_message(const char* msg);
+    esp_err_t send_ws_message(const char* msg);
 
     /**
      * @brief 初始化 Web 服务器和 mDNS 服务

@@ -38,6 +38,10 @@ static esp_err_t send_file_from_spiffs(httpd_req_t* req, const char* filename, c
 
     // 2. 设置 Content-Type (告诉浏览器这是 HTML 还是 JS，否则浏览器不解析)
     httpd_resp_set_type(req, type);
+    // 避免浏览器缓存旧版前端资源，确保每次刷新拿到最新 app.js/index.html
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    httpd_resp_set_hdr(req, "Pragma", "no-cache");
+    httpd_resp_set_hdr(req, "Expires", "0");
 
     // 3. 分块读取并发送 (避免一次性读入大文件导致 ESP32 内存耗尽)
     char chunk[1024];
@@ -216,10 +220,10 @@ esp_err_t WebServer::ws_handler(httpd_req_t* req)
 // ==========================================
 // [新增实现] 发送数据给浏览器 (主动推送/遥测)
 // ==========================================
-void WebServer::send_ws_message(const char* msg)
+esp_err_t WebServer::send_ws_message(const char* msg)
 {
     // 1. 安全检查：如果服务器没启动，或者还没人连上来过，就不发
-    if (!server || g_client_fd < 0) return;
+    if (!server || g_client_fd < 0) return ESP_ERR_INVALID_STATE;
 
     // 2. 构造数据包
     httpd_ws_frame_t ws_pkt;
@@ -242,6 +246,7 @@ void WebServer::send_ws_message(const char* msg)
             // g_client_fd = -1; // 可选：如果很严格可以置 -1，但通常不需要
         }
     }
+    return ret;
 }
 
 // ==========================================

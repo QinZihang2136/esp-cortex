@@ -68,6 +68,14 @@ struct EKFDebugData
     float mag_body_y;
     float mag_body_z;
     bool mag_used;           // 磁力计是否参与融合
+    float mag_weight;        // 磁力计融合权重 [0,1]
+    float acc_weight;        // 加速度计融合权重 [0,1]
+    float yaw_residual_std;  // 航向残差标准差 (rad)
+    float acc_norm;          // 当前加速度模长 (m/s^2)
+    float rate_imu_hz;       // IMU更新频率 (Hz)
+    float rate_predict_hz;   // EKF预测频率 (Hz)
+    float rate_acc_fuse_hz;  // 加速度融合频率 (Hz)
+    float rate_mag_fuse_hz;  // 磁力计融合频率 (Hz)
 
     // 协方差矩阵对角线元素 (可选，用于判断收敛状态)
     float P_yaw;             // yaw的不确定性

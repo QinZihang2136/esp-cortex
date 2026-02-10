@@ -11,8 +11,11 @@ public:
     // 1. 定义维度 (关键修改)
     // ==========================================
     // 注意：这是"误差状态"的维度 (Error State Dimension)
-    // 包含: [Angle_Err_X, Angle_Err_Y, Angle_Err_Z, Bias_Err_X, Bias_Err_Y, Bias_Err_Z]
-    static const int DIM_ERR = 6;
+    // 包含: [Angle_Err(3), Gyro_Bias_Err(3), Accel_Bias_Err(3)]
+    static const int DIM_ERR = 9;
+    static const int IDX_DTHETA = 0;
+    static const int IDX_DBG = 3;
+    static const int IDX_DBA = 6;
 
     // 观测维度
     static const int DIM_MEAS_ACC = 3;
@@ -22,7 +25,7 @@ public:
     // ==========================================
     // 2. 类型定义 (数学公式化)
     // ==========================================
-    // 协方差矩阵 P 是 6x6 的 (对应误差状态)
+    // 协方差矩阵 P 是 9x9 的 (对应误差状态)
     using MatrixP = Eigen::Matrix<float, DIM_ERR, DIM_ERR>;
     using MatrixQ = Eigen::Matrix<float, DIM_ERR, DIM_ERR>;
 
@@ -40,12 +43,14 @@ public:
     {
         Eigen::Quaternionf q;      // 姿态 (4维)
         Vector3f gyro_bias;        // 零偏 (3维)
+        Vector3f accel_bias;       // 加速度计零偏 (3维)
 
         // 构造函数：初始化为单位四元数和零偏
         NominalState()
         {
             q.setIdentity();       // w=1, x=0, y=0, z=0
             gyro_bias.setZero();
+            accel_bias.setZero();
         }
     };
 
@@ -56,11 +61,13 @@ public:
     {
         bool used = false;
         float acc_norm = 0.0f;
+        float acc_weight = 0.0f;
         Vector3f z = Vector3f::Zero();        // 归一化后的测量加速度方向
         Vector3f g_pred = Vector3f::Zero();   // 预测重力方向(机体系)
         Vector3f innov = Vector3f::Zero();    // y = z - g_pred
         Vector3f dtheta = Vector3f::Zero();   // 注入的姿态小角
-        Vector3f dbias = Vector3f::Zero();    // 注入的 bias 修正量
+        Vector3f dbias = Vector3f::Zero();    // 注入的 gyro bias 修正量
+        Vector3f dacc_bias = Vector3f::Zero(); // 注入的 accel bias 修正量
     };
 
     struct MagDebug
@@ -71,6 +78,7 @@ public:
         float yaw_predicted = 0.0f;
         float yaw_residual = 0.0f;
         float yaw_residual_std = 0.0f;  // 残差标准差（稳定性检测）
+        float mag_weight = 0.0f;
         Vector3f m_world;       // 世界坐标系磁场向量（调试用）
         Vector3f m_body;        // 机体坐标系磁场向量（调试用）
         Vector3f dtheta = Vector3f::Zero();
@@ -82,12 +90,13 @@ public:
     // --- 接口函数 (API) ---
     void init(const Vector3f& accel_meas);
     void predict(const Vector3f& gyro_meas, float dt);
-    void fuse_accel(const Vector3f& accel);
+    void fuse_accel(const Vector3f& accel, float gyro_norm);
     void fuse_mag(const Vector3f& mag);
 
     // --- Getter ---
     Vector3f get_euler_angles();
     Vector3f get_gyro_bias();
+    Vector3f get_accel_bias() const { return state.accel_bias; } // [New] 增加 Acc Bias 的获取接口
     float get_P_yaw() const { return P(2, 2); }
     float get_last_mag_k_yaw_bias_z() const { return last_mag_k_yaw_bias_z; }
 
@@ -97,9 +106,17 @@ public:
 
     // --- Setter ---
     // 设置过程噪声 (Process Noise)
-    void set_process_noise(float q_angle, float q_bias);
+    void set_process_noise(float q_angle, float q_gyro_bias, float q_accel_bias);
     // 设置测量噪声 (Measurement Noise)
     void set_measure_noise_accel(float r_accel);
+    void set_measure_noise_mag(float r_mag);
+    void set_mag_declination(float declination_deg);
+    void set_adaptive_fusion_config(float mag_w_min, float mag_gate_deg, float acc_gate_ms2);
+
+    //过程噪声
+    float q_angle_ = 0.001f;        // 角度过程噪声默认值
+    float q_gyro_bias_ = 0.0001f;  // 陀螺仪零偏过程噪声默认值
+    float q_accel_bias_ = 0.0001f; // 加速度计零偏过程噪声默认值
 
 private:
     // ==========================================
@@ -109,7 +126,7 @@ private:
     // 【核心变化】：不再用 VectorX x，改用结构体
     NominalState state;
 
-    // 协方差矩阵 (6x6) - 描述误差的不确定性
+    // 协方差矩阵 (9x9) - 描述误差的不确定性
     MatrixP P;
 
     // 噪声矩阵
@@ -126,4 +143,8 @@ private:
 
 private:
     float last_mag_k_yaw_bias_z = 0.0f;  // 保存最后一次磁力计融合的卡尔曼增益
+    float mag_declination_rad_ = 0.0f;
+    float mag_w_min_ = 0.10f;
+    float mag_gate_rad_ = 0.52f;     // 30 deg
+    float acc_gate_ms2_ = 3.5f;      // |acc_norm - g| gate for adaptive down-weight
 };

@@ -22,7 +22,7 @@ Web 服务器模块提供了一个**零依赖的 Web 可视化控制台**，用�
     └────┬────┘     └─────┬─────┘    └────────┘
          │                │
          │                └──────> Telemetry Task
-         │                        (20Hz 数据推送)
+         │                        (默认 30Hz，自适应回退)
          │
     ┌────▼────┐
     │ Browser │
@@ -55,7 +55,7 @@ Web 服务器模块提供了一个**零依赖的 Web 可视化控制台**，用�
 **消息格式**: JSON 文本
 
 **通信方向**:
-- **设备 → 浏览器**: 遥测数据 (20Hz)
+- **设备 → 浏览器**: 遥测数据 (默认 30Hz，自适应回退)
 - **浏览器 → 设备**: 参数修改指令
 
 ### 3. SPIFFS 文件系统
@@ -74,7 +74,12 @@ Web 服务器模块提供了一个**零依赖的 Web 可视化控制台**，用�
 
 ### 遥测数据 (Device → Browser)
 
-**频率**: 20 Hz (每 50ms 一帧)
+**频率**: 默认 30 Hz（约 33ms 一帧）
+
+**运行时保护**:
+- 连续异常时自动回退到安全频率（默认 20Hz）
+- 恢复稳定后自动退出回退，回到目标频率
+- 异常判据包括发送失败和发送耗时超阈值
 
 **JSON 格式**:
 ```json
@@ -114,6 +119,17 @@ Web 服务器模块提供了一个**零依赖的 Web 可视化控制台**，用�
       "k_yaw_bias_z": 0.002345,
       "accel_used": 1,
       "mag_used": 1,
+      "tx": {
+        "rate_hz": 29.8,
+        "send_ok": 30,
+        "send_fail": 0,
+        "json_len": 728,
+        "json_len_max": 733,
+        "stack_hwm": 5300,
+        "target_hz": 30.0,
+        "active_hz": 30.0,
+        "fallback": 0
+      },
       "mag_world": {
         "x": 0.234,
         "y": 0.123,
@@ -133,8 +149,21 @@ Web 服务器模块提供了一个**零依赖的 Web 可视化控制台**，用�
 - `mag`: 磁力计原始数据 (Gauss)
 - `imu`: IMU 原始数据 (加速度 m/s², 角速度 rad/s)
 - `ekf`: EKF 调试数据 (新增)
+- `ekf.tx`: Telemetry 发送链路诊断与频率状态（含回退状态）
 
 **发送代码**: [main/modules/telemetry/task_telemetry.cpp](../main/modules/telemetry/task_telemetry.cpp)
+
+### Telemetry 频率参数
+
+以下参数通过 `ParamRegistry` 在线生效（无需重启）：
+
+- `TELM_RATE_HZ_DASH`：目标推流频率，默认 `30`
+- `TELM_RATE_HZ_SAFE`：回退安全频率，默认 `20`
+- `TELM_AUTO_FALLBACK_EN`：自动回退开关，默认 `1`（启用）
+
+建议范围：
+- `TELM_RATE_HZ_DASH`: `20 ~ 35`
+- `TELM_RATE_HZ_SAFE`: `10 ~ 25`
 
 ### 参数修改 (Browser → Device)
 
